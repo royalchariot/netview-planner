@@ -3496,6 +3496,7 @@ function IncomeDetailPage() {
   const { incomeRules, transactions } = useFinancialData();
   const { updateFinancialData } = useFinancialDataActions();
   const [showForm, setShowForm] = useState(false);
+  const [editingRule, setEditingRule] = useState<IncomeRule | null>(null);
   const [notice, setNotice] = useState("");
   const incomeRows = transactions.filter((transaction) => transaction.type === "Income");
   const forecast = buildIncomeForecastEntries(incomeRules, transactions);
@@ -3512,10 +3513,10 @@ function IncomeDetailPage() {
     if (!name || amount <= 0) return;
 
     const record: IncomeRule = {
-      id: localRecordId("income-rule"),
+      id: editingRule?.id ?? localRecordId("income-rule"),
       account: formString(data, "account", "Checking"),
       amount,
-      endDate: formString(data, "endDate") || undefined,
+      endDate: formString(data, "endDate") ? formatInputDate(formString(data, "endDate")) : undefined,
       frequency: formString(data, "frequency", "Monthly"),
       incomeType: formString(data, "incomeType", "Salary"),
       name,
@@ -3525,9 +3526,47 @@ function IncomeDetailPage() {
       taxable: formString(data, "taxable", "Yes") === "Yes",
     };
 
-    updateFinancialData((current) => ({ ...current, incomeRules: [record, ...current.incomeRules] }));
+    updateFinancialData((current) => ({
+      ...current,
+      incomeRules: editingRule
+        ? replaceFirstRecord(
+            current.incomeRules,
+            (row) => (editingRule.id ? row.id === editingRule.id : row.name === editingRule.name && row.source === editingRule.source),
+            record,
+          )
+        : [record, ...current.incomeRules],
+    }));
     setShowForm(false);
-    setNotice("Income schedule saved.");
+    setEditingRule(null);
+    setNotice(editingRule ? "Income schedule updated." : "Income schedule saved.");
+  };
+
+  const openIncomeForm = () => {
+    setEditingRule(null);
+    setShowForm((value) => !value);
+    setNotice("");
+  };
+
+  const startEditRule = (rule: IncomeRule) => {
+    setEditingRule(rule);
+    setShowForm(true);
+    setNotice("");
+  };
+
+  const closeIncomeForm = () => {
+    setEditingRule(null);
+    setShowForm(false);
+  };
+
+  const removeRule = (rule: IncomeRule) => {
+    updateFinancialData((current) => ({
+      ...current,
+      incomeRules: removeFirstRecord(
+        current.incomeRules,
+        (row) => (rule.id ? row.id === rule.id : row.name === rule.name && row.source === rule.source && row.amount === rule.amount),
+      ),
+    }));
+    setNotice("Income schedule deleted.");
   };
 
   return (
@@ -3538,7 +3577,7 @@ function IncomeDetailPage() {
           <h2>Income / Pay Received</h2>
         </div>
         <div className="button-row">
-          <button className="primary-button" onClick={() => setShowForm((value) => !value)}>
+          <button className="primary-button" onClick={openIncomeForm}>
             <Plus size={17} />
             Add income schedule
           </button>
@@ -3556,57 +3595,57 @@ function IncomeDetailPage() {
       </div>
       {notice && <p className="form-message info">{notice}</p>}
       {showForm && (
-        <Panel title="Add Income Rule" action={<button className="icon-button" onClick={() => setShowForm(false)} aria-label="Close income form"><X size={16} /></button>}>
+        <Panel title={editingRule ? "Edit Income Rule" : "Add Income Rule"} action={<button className="icon-button" onClick={closeIncomeForm} aria-label="Close income form"><X size={16} /></button>}>
           <form className="feature-action-form" onSubmit={submitRule}>
             <label>
               <span>Income name</span>
-              <input name="name" placeholder="Salary, rent, dividend..." required />
+              <input key={`income-name-${editingRule?.id ?? "new"}`} name="name" defaultValue={editingRule?.name ?? ""} placeholder="Salary, rent, dividend..." required />
             </label>
             <label>
               <span>Income type</span>
-              <select name="incomeType" defaultValue="Salary">
+              <select key={`income-type-${editingRule?.id ?? "new"}`} name="incomeType" defaultValue={editingRule?.incomeType ?? "Salary"}>
                 {["Salary", "Rental income", "Business income", "Investment income", "Dividend income", "Interest income", "Freelance income", "Money received back from someone", "Gift", "Other"].map((type) => <option key={type}>{type}</option>)}
               </select>
             </label>
             <label>
               <span>Source</span>
-              <input name="source" placeholder="Employer, tenant, client" required />
+              <input key={`income-source-${editingRule?.id ?? "new"}`} name="source" defaultValue={editingRule?.source ?? ""} placeholder="Employer, tenant, client" required />
             </label>
             <label>
               <span>Amount</span>
-              <input name="amount" inputMode="decimal" placeholder="5000" required />
+              <input key={`income-amount-${editingRule?.id ?? "new"}`} name="amount" inputMode="decimal" defaultValue={editingRule?.amount ?? ""} placeholder="5000" required />
             </label>
             <label>
               <span>Start date</span>
-              <input name="startDate" type="date" defaultValue={formatIsoDateValue(new Date())} />
+              <input key={`income-start-${editingRule?.id ?? "new"}`} name="startDate" type="date" defaultValue={editingRule ? toIsoDate(editingRule.startDate) : formatIsoDateValue(new Date())} />
             </label>
             <label>
               <span>Frequency</span>
-              <select name="frequency" defaultValue="Monthly">
+              <select key={`income-frequency-${editingRule?.id ?? "new"}`} name="frequency" defaultValue={editingRule?.frequency ?? "Monthly"}>
                 {["One time", "Daily", "Weekly", "Every 2 weeks", "Twice a month", "Monthly", "Quarterly", "Yearly", "Custom"].map((frequency) => <option key={frequency}>{frequency}</option>)}
               </select>
             </label>
             <label>
               <span>End date optional</span>
-              <input name="endDate" type="date" />
+              <input key={`income-end-${editingRule?.id ?? "new"}`} name="endDate" type="date" defaultValue={editingRule?.endDate ? toIsoDate(editingRule.endDate) : ""} />
             </label>
             <label>
               <span>Receive account</span>
-              <input name="account" defaultValue="Checking" />
+              <input key={`income-account-${editingRule?.id ?? "new"}`} name="account" defaultValue={editingRule?.account ?? "Checking"} />
             </label>
             <label>
               <span>Taxable</span>
-              <select name="taxable" defaultValue="Yes">
+              <select key={`income-tax-${editingRule?.id ?? "new"}`} name="taxable" defaultValue={editingRule?.taxable === false ? "No" : "Yes"}>
                 <option>Yes</option>
                 <option>No</option>
               </select>
             </label>
             <label>
               <span>Notes</span>
-              <input name="notes" placeholder="Optional" />
+              <input key={`income-notes-${editingRule?.id ?? "new"}`} name="notes" defaultValue={editingRule?.notes ?? ""} placeholder="Optional" />
             </label>
             <button className="primary-button" type="submit">
-              Save income rule
+              {editingRule ? "Update income rule" : "Save income rule"}
               <ArrowRight size={17} />
             </button>
           </form>
@@ -3620,6 +3659,30 @@ function IncomeDetailPage() {
       </div>
       <Panel title="Income Hierarchy">
         <HierarchyList rows={incomeRules.map((rule) => ["Income", rule.incomeType, rule.source, `${rule.frequency} · ${currency(rule.amount)}`])} />
+      </Panel>
+      <Panel title="Income Schedules">
+        <DataTable
+          columns={["Name", "Type", "Source", "Amount", "Frequency", "Start", "End", "Account", "Taxable", "Actions"]}
+          rows={incomeRules.map((rule) => [
+            rule.name,
+            rule.incomeType,
+            rule.source,
+            <span className="money-positive">{currency(rule.amount)}</span>,
+            rule.frequency,
+            rule.startDate,
+            rule.endDate ?? "No end",
+            rule.account,
+            rule.taxable ? "Yes" : "No",
+            <div className="table-actions">
+              <button className="icon-button" type="button" aria-label={`Edit ${rule.name}`} onClick={() => startEditRule(rule)}>
+                <Pencil size={16} />
+              </button>
+              <button className="icon-button" type="button" aria-label={`Delete ${rule.name}`} onClick={() => removeRule(rule)}>
+                <Trash2 size={16} />
+              </button>
+            </div>,
+          ])}
+        />
       </Panel>
       <Panel title="Income Forecast Entries">
         <DataTable
@@ -3828,6 +3891,7 @@ function SurvivalBudgetPage() {
   const { survivalBudgets } = useFinancialData();
   const { updateFinancialData } = useFinancialDataActions();
   const [showForm, setShowForm] = useState(false);
+  const [editingSurvival, setEditingSurvival] = useState<SurvivalBudgetPlan | null>(null);
   const [notice, setNotice] = useState("");
   const totalSurvival = survivalBudgets.reduce((sum, row) => sum + row.totalAmount, 0);
   const monthlyNeed = survivalBudgets.reduce((sum, row) => sum + survivalMonthlyAllocation(row), 0);
@@ -3843,7 +3907,7 @@ function SurvivalBudgetPage() {
     if (!name || totalAmount <= 0 || tenureMonths <= 0) return;
 
     const record: SurvivalBudgetPlan = {
-      id: localRecordId("survival"),
+      id: editingSurvival?.id ?? localRecordId("survival"),
       expenseGroup: formString(data, "expenseGroup", "Housing"),
       expenseType: formString(data, "expenseType", "Rent"),
       name,
@@ -3852,9 +3916,47 @@ function SurvivalBudgetPage() {
       totalAmount,
     };
 
-    updateFinancialData((current) => ({ ...current, survivalBudgets: [record, ...current.survivalBudgets] }));
+    updateFinancialData((current) => ({
+      ...current,
+      survivalBudgets: editingSurvival
+        ? replaceFirstRecord(
+            current.survivalBudgets,
+            (row) => (editingSurvival.id ? row.id === editingSurvival.id : row.name === editingSurvival.name && row.totalAmount === editingSurvival.totalAmount),
+            record,
+          )
+        : [record, ...current.survivalBudgets],
+    }));
     setShowForm(false);
-    setNotice("Survival budget saved.");
+    setEditingSurvival(null);
+    setNotice(editingSurvival ? "Survival budget updated." : "Survival budget saved.");
+  };
+
+  const openSurvivalForm = () => {
+    setEditingSurvival(null);
+    setShowForm((value) => !value);
+    setNotice("");
+  };
+
+  const startEditSurvival = (record: SurvivalBudgetPlan) => {
+    setEditingSurvival(record);
+    setShowForm(true);
+    setNotice("");
+  };
+
+  const closeSurvivalForm = () => {
+    setEditingSurvival(null);
+    setShowForm(false);
+  };
+
+  const removeSurvival = (record: SurvivalBudgetPlan) => {
+    updateFinancialData((current) => ({
+      ...current,
+      survivalBudgets: removeFirstRecord(
+        current.survivalBudgets,
+        (row) => (record.id ? row.id === record.id : row.name === record.name && row.totalAmount === record.totalAmount),
+      ),
+    }));
+    setNotice("Survival budget deleted.");
   };
 
   return (
@@ -3864,43 +3966,43 @@ function SurvivalBudgetPage() {
           <p className="eyebrow">Survival Budget → Expense Group → Expense Type → Monthly Allocation</p>
           <h2>Survival Budget</h2>
         </div>
-        <button className="primary-button" onClick={() => setShowForm((value) => !value)}>
+        <button className="primary-button" onClick={openSurvivalForm}>
           <Plus size={17} />
           Add survival budget
         </button>
       </div>
       {notice && <p className="form-message info">{notice}</p>}
       {showForm && (
-        <Panel title="Add Survival Reserve" action={<button className="icon-button" onClick={() => setShowForm(false)} aria-label="Close survival budget form"><X size={16} /></button>}>
+        <Panel title={editingSurvival ? "Edit Survival Reserve" : "Add Survival Reserve"} action={<button className="icon-button" onClick={closeSurvivalForm} aria-label="Close survival budget form"><X size={16} /></button>}>
           <form className="feature-action-form" onSubmit={submitSurvival}>
             <label>
               <span>Plan name</span>
-              <input name="name" placeholder="Six month survival reserve" required />
+              <input key={`survival-name-${editingSurvival?.id ?? "new"}`} name="name" defaultValue={editingSurvival?.name ?? ""} placeholder="Six month survival reserve" required />
             </label>
             <label>
               <span>Expense group</span>
-              <select name="expenseGroup" defaultValue="Housing">
+              <select key={`survival-group-${editingSurvival?.id ?? "new"}`} name="expenseGroup" defaultValue={editingSurvival?.expenseGroup ?? "Housing"}>
                 {["Housing", "Food", "Travel / Transport", "Health", "Communication", "Personal Basics", "Emergency Buffer"].map((group) => <option key={group}>{group}</option>)}
               </select>
             </label>
             <label>
               <span>Expense type</span>
-              <input name="expenseType" placeholder="Rent, groceries, medical emergency..." required />
+              <input key={`survival-type-${editingSurvival?.id ?? "new"}`} name="expenseType" defaultValue={editingSurvival?.expenseType ?? ""} placeholder="Rent, groceries, medical emergency..." required />
             </label>
             <label>
               <span>Total survival amount</span>
-              <input name="totalAmount" inputMode="decimal" placeholder="9000" required />
+              <input key={`survival-amount-${editingSurvival?.id ?? "new"}`} name="totalAmount" inputMode="decimal" defaultValue={editingSurvival?.totalAmount ?? ""} placeholder="9000" required />
             </label>
             <label>
               <span>Tenure in months</span>
-              <input name="tenureMonths" inputMode="numeric" placeholder="6" required />
+              <input key={`survival-tenure-${editingSurvival?.id ?? "new"}`} name="tenureMonths" inputMode="numeric" defaultValue={editingSurvival?.tenureMonths ?? ""} placeholder="6" required />
             </label>
             <label>
               <span>Notes</span>
-              <input name="notes" placeholder="Optional" />
+              <input key={`survival-notes-${editingSurvival?.id ?? "new"}`} name="notes" defaultValue={editingSurvival?.notes ?? ""} placeholder="Optional" />
             </label>
             <button className="primary-button" type="submit">
-              Save survival budget
+              {editingSurvival ? "Update survival budget" : "Save survival budget"}
               <ArrowRight size={17} />
             </button>
           </form>
@@ -3915,7 +4017,7 @@ function SurvivalBudgetPage() {
       <Panel title="Survival Budget Formula">
         <p className="insight info">Monthly Survival Need = Total Survival Budget / Tenure in Months.</p>
         <DataTable
-          columns={["Expense group", "Expense type", "Total amount", "Tenure", "Monthly allocation", "Future reserve"]}
+          columns={["Expense group", "Expense type", "Total amount", "Tenure", "Monthly allocation", "Future reserve", "Actions"]}
           rows={survivalBudgets.map((row) => [
             row.expenseGroup,
             row.expenseType,
@@ -3923,6 +4025,14 @@ function SurvivalBudgetPage() {
             `${row.tenureMonths} months`,
             currency(survivalMonthlyAllocation(row)),
             currency(Math.max(row.totalAmount - survivalMonthlyAllocation(row), 0)),
+            <div className="table-actions">
+              <button className="icon-button" type="button" aria-label={`Edit ${row.name}`} onClick={() => startEditSurvival(row)}>
+                <Pencil size={16} />
+              </button>
+              <button className="icon-button" type="button" aria-label={`Delete ${row.name}`} onClick={() => removeSurvival(row)}>
+                <Trash2 size={16} />
+              </button>
+            </div>,
           ])}
         />
       </Panel>
@@ -3937,6 +4047,7 @@ function FuturePlansPage() {
   const { futurePlans } = useFinancialData();
   const { updateFinancialData } = useFinancialDataActions();
   const [showForm, setShowForm] = useState(false);
+  const [editingFuturePlan, setEditingFuturePlan] = useState<FuturePlan | null>(null);
   const [notice, setNotice] = useState("");
   const totalTarget = futurePlans.reduce((sum, plan) => sum + plan.targetAmount, 0);
   const totalSaved = futurePlans.reduce((sum, plan) => sum + plan.currentSaved, 0);
@@ -3952,7 +4063,7 @@ function FuturePlansPage() {
     if (!name || targetAmount <= 0) return;
 
     const record: FuturePlan = {
-      id: localRecordId("future-plan"),
+      id: editingFuturePlan?.id ?? localRecordId("future-plan"),
       category: formString(data, "category", "Emergency Fund"),
       currentSaved: formNumber(data, "currentSaved"),
       name,
@@ -3963,9 +4074,47 @@ function FuturePlansPage() {
       targetDate: formatInputDate(formString(data, "targetDate", formatIsoDateValue(new Date()))),
     };
 
-    updateFinancialData((current) => ({ ...current, futurePlans: [record, ...current.futurePlans] }));
+    updateFinancialData((current) => ({
+      ...current,
+      futurePlans: editingFuturePlan
+        ? replaceFirstRecord(
+            current.futurePlans,
+            (row) => (editingFuturePlan.id ? row.id === editingFuturePlan.id : row.name === editingFuturePlan.name && row.targetAmount === editingFuturePlan.targetAmount),
+            record,
+          )
+        : [record, ...current.futurePlans],
+    }));
     setShowForm(false);
-    setNotice("Future plan saved.");
+    setEditingFuturePlan(null);
+    setNotice(editingFuturePlan ? "Future plan updated." : "Future plan saved.");
+  };
+
+  const openFuturePlanForm = () => {
+    setEditingFuturePlan(null);
+    setShowForm((value) => !value);
+    setNotice("");
+  };
+
+  const startEditFuturePlan = (plan: FuturePlan) => {
+    setEditingFuturePlan(plan);
+    setShowForm(true);
+    setNotice("");
+  };
+
+  const closeFuturePlanForm = () => {
+    setEditingFuturePlan(null);
+    setShowForm(false);
+  };
+
+  const removeFuturePlan = (plan: FuturePlan) => {
+    updateFinancialData((current) => ({
+      ...current,
+      futurePlans: removeFirstRecord(
+        current.futurePlans,
+        (row) => (plan.id ? row.id === plan.id : row.name === plan.name && row.targetAmount === plan.targetAmount),
+      ),
+    }));
+    setNotice("Future plan deleted.");
   };
 
   return (
@@ -3975,44 +4124,44 @@ function FuturePlansPage() {
           <p className="eyebrow">Future Plans → Plan Category → Plan Type → Goal → Monthly Saving Requirement</p>
           <h2>Future Plans</h2>
         </div>
-        <button className="primary-button" onClick={() => setShowForm((value) => !value)}>
+        <button className="primary-button" onClick={openFuturePlanForm}>
           <Plus size={17} />
           Add future plan
         </button>
       </div>
       {notice && <p className="form-message info">{notice}</p>}
       {showForm && (
-        <Panel title="Add Future Plan" action={<button className="icon-button" onClick={() => setShowForm(false)} aria-label="Close future plan form"><X size={16} /></button>}>
+        <Panel title={editingFuturePlan ? "Edit Future Plan" : "Add Future Plan"} action={<button className="icon-button" onClick={closeFuturePlanForm} aria-label="Close future plan form"><X size={16} /></button>}>
           <form className="feature-action-form" onSubmit={submitFuturePlan}>
             <label>
               <span>Plan name</span>
-              <input name="name" placeholder="Emergency fund, car down payment..." required />
+              <input key={`future-name-${editingFuturePlan?.id ?? "new"}`} name="name" defaultValue={editingFuturePlan?.name ?? ""} placeholder="Emergency fund, car down payment..." required />
             </label>
             <label>
               <span>Plan category</span>
-              <select name="category" defaultValue="Emergency Fund">
+              <select key={`future-category-${editingFuturePlan?.id ?? "new"}`} name="category" defaultValue={editingFuturePlan?.category ?? "Emergency Fund"}>
                 {["Education", "Vehicle", "House / Real Estate", "Business", "Travel", "Emergency Fund", "Personal Goals"].map((category) => <option key={category}>{category}</option>)}
               </select>
             </label>
             <label>
               <span>Plan type</span>
-              <input name="planType" placeholder="6-month fund, down payment, course..." required />
+              <input key={`future-type-${editingFuturePlan?.id ?? "new"}`} name="planType" defaultValue={editingFuturePlan?.planType ?? ""} placeholder="6-month fund, down payment, course..." required />
             </label>
             <label>
               <span>Target amount</span>
-              <input name="targetAmount" inputMode="decimal" placeholder="12000" required />
+              <input key={`future-target-${editingFuturePlan?.id ?? "new"}`} name="targetAmount" inputMode="decimal" defaultValue={editingFuturePlan?.targetAmount ?? ""} placeholder="12000" required />
             </label>
             <label>
               <span>Current saved</span>
-              <input name="currentSaved" inputMode="decimal" defaultValue="0" />
+              <input key={`future-saved-${editingFuturePlan?.id ?? "new"}`} name="currentSaved" inputMode="decimal" defaultValue={editingFuturePlan?.currentSaved ?? 0} />
             </label>
             <label>
               <span>Target date</span>
-              <input name="targetDate" type="date" defaultValue={formatIsoDateValue(new Date())} />
+              <input key={`future-date-${editingFuturePlan?.id ?? "new"}`} name="targetDate" type="date" defaultValue={editingFuturePlan ? toIsoDate(editingFuturePlan.targetDate) : formatIsoDateValue(new Date())} />
             </label>
             <label>
               <span>Priority</span>
-              <select name="priority" defaultValue="High">
+              <select key={`future-priority-${editingFuturePlan?.id ?? "new"}`} name="priority" defaultValue={editingFuturePlan?.priority ?? "High"}>
                 <option>High</option>
                 <option>Medium</option>
                 <option>Low</option>
@@ -4020,10 +4169,10 @@ function FuturePlansPage() {
             </label>
             <label>
               <span>Notes</span>
-              <input name="notes" placeholder="Optional" />
+              <input key={`future-notes-${editingFuturePlan?.id ?? "new"}`} name="notes" defaultValue={editingFuturePlan?.notes ?? ""} placeholder="Optional" />
             </label>
             <button className="primary-button" type="submit">
-              Save future plan
+              {editingFuturePlan ? "Update future plan" : "Save future plan"}
               <ArrowRight size={17} />
             </button>
           </form>
@@ -4040,7 +4189,7 @@ function FuturePlansPage() {
       </Panel>
       <Panel title="Future Plan Requirements">
         <DataTable
-          columns={["Plan", "Category", "Type", "Target", "Saved", "Remaining", "Target date", "Monthly required", "Priority", "Status"]}
+          columns={["Plan", "Category", "Type", "Target", "Saved", "Remaining", "Target date", "Monthly required", "Priority", "Status", "Actions"]}
           rows={futurePlans.map((plan) => {
             const status = futurePlanStatus(plan);
             return [
@@ -4054,6 +4203,14 @@ function FuturePlansPage() {
               currency(futurePlanMonthlyRequired(plan)),
               plan.priority,
               <Badge tone={status.tone}>{status.label}</Badge>,
+              <div className="table-actions">
+                <button className="icon-button" type="button" aria-label={`Edit ${plan.name}`} onClick={() => startEditFuturePlan(plan)}>
+                  <Pencil size={16} />
+                </button>
+                <button className="icon-button" type="button" aria-label={`Delete ${plan.name}`} onClick={() => removeFuturePlan(plan)}>
+                  <Trash2 size={16} />
+                </button>
+              </div>,
             ];
           })}
         />
@@ -4102,7 +4259,8 @@ function MonthlyCashFlowPage() {
 
 function AssetsPage() {
   const { assets, loans } = useFinancialData();
-  const { deleteAsset } = useFinancialDataActions();
+  const { deleteAsset, updateAsset } = useFinancialDataActions();
+  const [editingAsset, setEditingAsset] = useState<Asset | null>(null);
   const [notice, setNotice] = useState("");
   const assetValue = assets.reduce((sum, asset) => sum + asset.currentValue * (asset.ownership / 100), 0);
   const purchaseValue = assets.reduce((sum, asset) => sum + asset.purchaseValue * (asset.ownership / 100), 0);
@@ -4125,10 +4283,83 @@ function AssetsPage() {
     setNotice(result.ok ? "Asset deleted." : `Could not delete asset: ${result.message}`);
   };
 
+  const startEditAsset = (asset: Asset) => {
+    setEditingAsset(asset);
+    setNotice("");
+  };
+
+  const submitAssetEdit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!editingAsset) return;
+
+    const data = new FormData(event.currentTarget);
+    const name = formString(data, "name");
+    const currentValue = formNumber(data, "currentValue");
+
+    if (!name || currentValue < 0) {
+      setNotice("Enter an asset name and current value before saving.");
+      return;
+    }
+
+    const record: Asset = {
+      id: editingAsset.id,
+      category: formString(data, "category", editingAsset.category),
+      currentValue,
+      linkedLoan: formString(data, "linkedLoan") || undefined,
+      name,
+      ownership: formNumber(data, "ownership", editingAsset.ownership),
+      purchaseValue: formNumber(data, "purchaseValue", editingAsset.purchaseValue),
+      updated: "July 2026",
+    };
+
+    const result = await updateAsset(record, editingAsset);
+    if (!result.ok) {
+      setNotice(`Could not update asset: ${result.message}`);
+      return;
+    }
+
+    setEditingAsset(null);
+    setNotice("Asset updated.");
+  };
+
   return (
     <div className="page-stack">
       <PageToolbar title="Assets" actions={["Add asset", "Update value", "Upload document"]} />
       {notice && <p className={/could not/i.test(notice) ? "form-message danger" : "form-message info"}>{notice}</p>}
+      {editingAsset && (
+        <Panel title={`Edit Asset: ${editingAsset.name}`} action={<button className="icon-button" onClick={() => setEditingAsset(null)} aria-label="Close asset edit form"><X size={16} /></button>}>
+          <form className="feature-action-form" onSubmit={submitAssetEdit}>
+            <label>
+              <span>Asset name</span>
+              <input name="name" defaultValue={editingAsset.name} required />
+            </label>
+            <label>
+              <span>Category</span>
+              <input name="category" defaultValue={editingAsset.category} required />
+            </label>
+            <label>
+              <span>Purchase value</span>
+              <input name="purchaseValue" inputMode="decimal" defaultValue={editingAsset.purchaseValue} />
+            </label>
+            <label>
+              <span>Current value</span>
+              <input name="currentValue" inputMode="decimal" defaultValue={editingAsset.currentValue} required />
+            </label>
+            <label>
+              <span>Ownership %</span>
+              <input name="ownership" inputMode="decimal" defaultValue={editingAsset.ownership} />
+            </label>
+            <label>
+              <span>Linked loan</span>
+              <input name="linkedLoan" defaultValue={editingAsset.linkedLoan ?? ""} placeholder="Optional loan name" />
+            </label>
+            <button className="primary-button" type="submit">
+              Update asset
+              <ArrowRight size={17} />
+            </button>
+          </form>
+        </Panel>
+      )}
       <div className="summary-grid four">
         <SummaryCard label="Current asset value" value={currency(assetValue)} detail="Owned value after ownership percentage" tone="success" />
         <SummaryCard label="Purchase value" value={currency(purchaseValue)} detail="Original acquisition value" tone="info" />
@@ -4158,9 +4389,14 @@ function AssetsPage() {
               `${asset.ownership}%`,
               asset.linkedLoan ?? "None",
               asset.updated,
-              <button className="icon-button" type="button" aria-label={`Delete ${asset.name}`} onClick={() => removeAsset(asset)}>
-                <Trash2 size={16} />
-              </button>,
+              <div className="table-actions">
+                <button className="icon-button" type="button" aria-label={`Edit ${asset.name}`} onClick={() => startEditAsset(asset)}>
+                  <Pencil size={16} />
+                </button>
+                <button className="icon-button" type="button" aria-label={`Delete ${asset.name}`} onClick={() => removeAsset(asset)}>
+                  <Trash2 size={16} />
+                </button>
+              </div>,
             ];
           })}
         />
@@ -4183,6 +4419,7 @@ function ReceivablesPage() {
   const { receivables } = useFinancialData();
   const { updateFinancialData } = useFinancialDataActions();
   const [showForm, setShowForm] = useState(false);
+  const [editingReceivable, setEditingReceivable] = useState<Receivable | null>(null);
   const [notice, setNotice] = useState("");
   const totalOwed = receivables.reduce((sum, row) => sum + row.amountOwed, 0);
   const totalReceived = receivables.reduce((sum, row) => sum + row.amountReceived, 0);
@@ -4198,7 +4435,7 @@ function ReceivablesPage() {
     if (!person || amountOwed <= 0) return;
 
     const record: Receivable = {
-      id: localRecordId("receivable"),
+      id: editingReceivable?.id ?? localRecordId("receivable"),
       amountOwed,
       amountReceived: formNumber(data, "amountReceived"),
       dueDate: formatInputDate(formString(data, "dueDate", formatIsoDateValue(new Date()))),
@@ -4210,9 +4447,36 @@ function ReceivablesPage() {
       status: formString(data, "status", "Pending") as Receivable["status"],
     };
 
-    updateFinancialData((current) => ({ ...current, receivables: [record, ...current.receivables] }));
+    updateFinancialData((current) => ({
+      ...current,
+      receivables: editingReceivable
+        ? replaceFirstRecord(
+            current.receivables,
+            (row) => (editingReceivable.id ? row.id === editingReceivable.id : row.person === editingReceivable.person && row.amountOwed === editingReceivable.amountOwed),
+            record,
+          )
+        : [record, ...current.receivables],
+    }));
     setShowForm(false);
-    setNotice("Receivable saved.");
+    setEditingReceivable(null);
+    setNotice(editingReceivable ? "Receivable updated." : "Receivable saved.");
+  };
+
+  const openReceivableForm = () => {
+    setEditingReceivable(null);
+    setShowForm((value) => !value);
+    setNotice("");
+  };
+
+  const startEditReceivable = (record: Receivable) => {
+    setEditingReceivable(record);
+    setShowForm(true);
+    setNotice("");
+  };
+
+  const closeReceivableForm = () => {
+    setEditingReceivable(null);
+    setShowForm(false);
   };
 
   const removeReceivable = (record: Receivable) => {
@@ -4230,61 +4494,61 @@ function ReceivablesPage() {
           <p className="eyebrow">Money Owed to Me → Ower Type → Reason → Person / Entity → Payment Schedule</p>
           <h2>Money Owed to Me</h2>
         </div>
-        <button className="primary-button" onClick={() => setShowForm((value) => !value)}>
+        <button className="primary-button" onClick={openReceivableForm}>
           <Plus size={17} />
           Add receivable
         </button>
       </div>
       {notice && <p className="form-message info">{notice}</p>}
       {showForm && (
-        <Panel title="Add Money Owed to Me" action={<button className="icon-button" onClick={() => setShowForm(false)} aria-label="Close receivable form"><X size={16} /></button>}>
+        <Panel title={editingReceivable ? "Edit Money Owed to Me" : "Add Money Owed to Me"} action={<button className="icon-button" onClick={closeReceivableForm} aria-label="Close receivable form"><X size={16} /></button>}>
           <form className="feature-action-form" onSubmit={submitReceivable}>
             <label>
               <span>Ower type</span>
-              <select name="owerType" defaultValue="Friend">
+              <select key={`receivable-ower-${editingReceivable?.id ?? "new"}`} name="owerType" defaultValue={editingReceivable?.owerType ?? "Friend"}>
                 {["Friend", "Family", "Tenant", "Business client", "Employer", "Third party", "Other"].map((type) => <option key={type}>{type}</option>)}
               </select>
             </label>
             <label>
               <span>Reason</span>
-              <select name="reason" defaultValue="Personal loan given">
+              <select key={`receivable-reason-${editingReceivable?.id ?? "new"}`} name="reason" defaultValue={editingReceivable?.reason ?? "Personal loan given"}>
                 {["Personal loan given", "Rent receivable", "Business invoice", "Shared expense", "Deposit refund", "Reimbursement", "Other"].map((reason) => <option key={reason}>{reason}</option>)}
               </select>
             </label>
             <label>
               <span>Person / entity</span>
-              <input name="person" placeholder="Name" required />
+              <input key={`receivable-person-${editingReceivable?.id ?? "new"}`} name="person" defaultValue={editingReceivable?.person ?? ""} placeholder="Name" required />
             </label>
             <label>
               <span>Amount owed</span>
-              <input name="amountOwed" inputMode="decimal" placeholder="1000" required />
+              <input key={`receivable-owed-${editingReceivable?.id ?? "new"}`} name="amountOwed" inputMode="decimal" defaultValue={editingReceivable?.amountOwed ?? ""} placeholder="1000" required />
             </label>
             <label>
               <span>Amount received</span>
-              <input name="amountReceived" inputMode="decimal" defaultValue="0" />
+              <input key={`receivable-received-${editingReceivable?.id ?? "new"}`} name="amountReceived" inputMode="decimal" defaultValue={editingReceivable?.amountReceived ?? 0} />
             </label>
             <label>
               <span>Due date</span>
-              <input name="dueDate" type="date" defaultValue={formatIsoDateValue(new Date())} />
+              <input key={`receivable-due-${editingReceivable?.id ?? "new"}`} name="dueDate" type="date" defaultValue={editingReceivable ? toIsoDate(editingReceivable.dueDate) : formatIsoDateValue(new Date())} />
             </label>
             <label>
               <span>Frequency</span>
-              <select name="frequency" defaultValue="One time">
+              <select key={`receivable-frequency-${editingReceivable?.id ?? "new"}`} name="frequency" defaultValue={editingReceivable?.frequency ?? "One time"}>
                 {["One time", "Weekly", "Every 2 weeks", "Monthly", "Quarterly", "Yearly"].map((frequency) => <option key={frequency}>{frequency}</option>)}
               </select>
             </label>
             <label>
               <span>Status</span>
-              <select name="status" defaultValue="Pending">
+              <select key={`receivable-status-${editingReceivable?.id ?? "new"}`} name="status" defaultValue={editingReceivable?.status ?? "Pending"}>
                 {["Pending", "Partially Paid", "Paid", "Overdue"].map((status) => <option key={status}>{status}</option>)}
               </select>
             </label>
             <label>
               <span>Notes</span>
-              <input name="notes" placeholder="Optional" />
+              <input key={`receivable-notes-${editingReceivable?.id ?? "new"}`} name="notes" defaultValue={editingReceivable?.notes ?? ""} placeholder="Optional" />
             </label>
             <button className="primary-button" type="submit">
-              Save receivable
+              {editingReceivable ? "Update receivable" : "Save receivable"}
               <ArrowRight size={17} />
             </button>
           </form>
@@ -4312,9 +4576,14 @@ function ReceivablesPage() {
             row.dueDate,
             row.frequency,
             <Badge tone={row.status === "Paid" ? "success" : row.status === "Overdue" ? "danger" : row.status === "Partially Paid" ? "warning" : "info"}>{row.status}</Badge>,
-            <button className="icon-button" type="button" aria-label={`Delete ${row.person}`} onClick={() => removeReceivable(row)}>
-              <Trash2 size={16} />
-            </button>,
+            <div className="table-actions">
+              <button className="icon-button" type="button" aria-label={`Edit ${row.person}`} onClick={() => startEditReceivable(row)}>
+                <Pencil size={16} />
+              </button>
+              <button className="icon-button" type="button" aria-label={`Delete ${row.person}`} onClick={() => removeReceivable(row)}>
+                <Trash2 size={16} />
+              </button>
+            </div>,
           ])}
         />
       </Panel>
@@ -4324,10 +4593,11 @@ function ReceivablesPage() {
 
 function LoansPage() {
   const { assets, loanSchedule, loans } = useFinancialData();
-  const { deleteLoan } = useFinancialDataActions();
+  const { deleteLoan, updateLoan } = useFinancialDataActions();
   const autoLoan = loans[1] ?? loans[0];
   const carAsset = autoLoan ? assets.find((asset) => asset.name === autoLoan.linkedAsset) : undefined;
   const carEquity = autoLoan ? (carAsset?.currentValue ?? 0) - autoLoan.currentBalance : 0;
+  const [editingLoan, setEditingLoan] = useState<Loan | null>(null);
   const [extraMonthly, setExtraMonthly] = useState("200");
   const [oneTimePayment, setOneTimePayment] = useState("1000");
   const [notice, setNotice] = useState("");
@@ -4352,10 +4622,108 @@ function LoansPage() {
     setNotice(result.ok ? "Loan deleted." : `Could not delete loan: ${result.message}`);
   };
 
+  const startEditLoan = (loan: Loan) => {
+    setEditingLoan(loan);
+    setNotice("");
+  };
+
+  const submitLoanEdit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!editingLoan) return;
+
+    const data = new FormData(event.currentTarget);
+    const name = formString(data, "name");
+    const currentBalance = formNumber(data, "currentBalance");
+
+    if (!name || currentBalance < 0) {
+      setNotice("Enter a loan name and current balance before saving.");
+      return;
+    }
+
+    const rate = formNumber(data, "rate", editingLoan.rate);
+    const record: Loan = {
+      id: editingLoan.id,
+      currentBalance,
+      end: formString(data, "end", editingLoan.end),
+      interestLeft: formNumber(data, "interestLeft", Math.round(currentBalance * (rate / 100) * 1.5)),
+      linkedAsset: formString(data, "linkedAsset") || undefined,
+      monthlyPayment: formNumber(data, "monthlyPayment", editingLoan.monthlyPayment),
+      name,
+      originalAmount: formNumber(data, "originalAmount", editingLoan.originalAmount),
+      rate,
+      remainingMonths: formNumber(data, "remainingMonths", editingLoan.remainingMonths),
+      start: formString(data, "start", editingLoan.start),
+      type: formString(data, "type", editingLoan.type),
+    };
+
+    const result = await updateLoan(record, editingLoan);
+    if (!result.ok) {
+      setNotice(`Could not update loan: ${result.message}`);
+      return;
+    }
+
+    setEditingLoan(null);
+    setNotice("Loan updated.");
+  };
+
   return (
     <div className="page-stack">
       <PageToolbar title="Loans / Liabilities" actions={["Add loan", "Update loan", "Run simulator", "Export schedule"]} />
       {notice && <p className={/could not/i.test(notice) ? "form-message danger" : "form-message info"}>{notice}</p>}
+      {editingLoan && (
+        <Panel title={`Edit Loan: ${editingLoan.name}`} action={<button className="icon-button" onClick={() => setEditingLoan(null)} aria-label="Close loan edit form"><X size={16} /></button>}>
+          <form className="feature-action-form" onSubmit={submitLoanEdit}>
+            <label>
+              <span>Loan name</span>
+              <input name="name" defaultValue={editingLoan.name} required />
+            </label>
+            <label>
+              <span>Type</span>
+              <input name="type" defaultValue={editingLoan.type} required />
+            </label>
+            <label>
+              <span>Original amount</span>
+              <input name="originalAmount" inputMode="decimal" defaultValue={editingLoan.originalAmount} />
+            </label>
+            <label>
+              <span>Current balance</span>
+              <input name="currentBalance" inputMode="decimal" defaultValue={editingLoan.currentBalance} required />
+            </label>
+            <label>
+              <span>Interest rate %</span>
+              <input name="rate" inputMode="decimal" defaultValue={editingLoan.rate} />
+            </label>
+            <label>
+              <span>Monthly payment</span>
+              <input name="monthlyPayment" inputMode="decimal" defaultValue={editingLoan.monthlyPayment} />
+            </label>
+            <label>
+              <span>Remaining months</span>
+              <input name="remainingMonths" inputMode="numeric" defaultValue={editingLoan.remainingMonths} />
+            </label>
+            <label>
+              <span>Interest left</span>
+              <input name="interestLeft" inputMode="decimal" defaultValue={editingLoan.interestLeft} />
+            </label>
+            <label>
+              <span>Start</span>
+              <input name="start" defaultValue={editingLoan.start} />
+            </label>
+            <label>
+              <span>Payoff date</span>
+              <input name="end" defaultValue={editingLoan.end} />
+            </label>
+            <label>
+              <span>Linked asset</span>
+              <input name="linkedAsset" defaultValue={editingLoan.linkedAsset ?? ""} placeholder="Optional asset name" />
+            </label>
+            <button className="primary-button" type="submit">
+              Update loan
+              <ArrowRight size={17} />
+            </button>
+          </form>
+        </Panel>
+      )}
       <div className="summary-grid four">
         <SummaryCard label="Total debt" value={currency(totalDebt)} detail="Current balances owed" tone={totalDebt > 0 ? "danger" : "success"} />
         <SummaryCard label="Monthly repayment required" value={currency(monthlyRequired)} detail="Minimum and EMI payments" tone="warning" />
@@ -4384,9 +4752,14 @@ function LoansPage() {
               "Monthly",
               loan.linkedAsset ?? "Not linked",
               <Badge tone={loan.rate > 20 ? "danger" : "success"}>{loan.rate > 20 ? "High APR" : "Active"}</Badge>,
-              <button className="icon-button" type="button" aria-label={`Delete ${loan.name}`} onClick={() => removeLoan(loan)}>
-                <Trash2 size={16} />
-              </button>,
+              <div className="table-actions">
+                <button className="icon-button" type="button" aria-label={`Edit ${loan.name}`} onClick={() => startEditLoan(loan)}>
+                  <Pencil size={16} />
+                </button>
+                <button className="icon-button" type="button" aria-label={`Delete ${loan.name}`} onClick={() => removeLoan(loan)}>
+                  <Trash2 size={16} />
+                </button>
+              </div>,
             ];
           })}
         />

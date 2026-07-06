@@ -3,6 +3,7 @@ import { createClient, type Session, type User } from "@supabase/supabase-js";
 import {
   AlertTriangle,
   ArrowRight,
+  Banknote,
   Bell,
   Bot,
   CalendarDays,
@@ -10,6 +11,7 @@ import {
   ChevronDown,
   ChevronLeft,
   ChevronRight,
+  CircleDollarSign,
   Download,
   FileSpreadsheet,
   FileText,
@@ -134,9 +136,18 @@ const pageTitleOverrides: Record<string, string> = {
   "financial-health": "Financial Health",
 };
 
+function isSingleUserMode() {
+  const configured = (import.meta.env.VITE_SINGLE_USER_MODE as string | undefined)?.toLowerCase();
+  if (configured === "true") return true;
+  if (configured === "false") return false;
+
+  return ["localhost", "127.0.0.1", "::1"].includes(window.location.hostname);
+}
+
 function readInitialPage() {
   const hash = window.location.hash.replace("#", "");
   if (hash.includes("type=recovery") || hash.includes("access_token=")) return "reset-password";
+  if (isSingleUserMode() && (!hash || publicPages.includes(hash) || authPages.includes(hash))) return "dashboard";
   return hash || "home";
 }
 
@@ -1089,13 +1100,14 @@ function userDisplayName(user: User | null) {
 }
 
 export default function App() {
+  const singleUserMode = isSingleUserMode();
   const [page, setPageState] = useState(readInitialPage);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [dataReset, setDataReset] = useState(readInitialResetState);
-  const [demoMode, setDemoMode] = useState(readInitialDemoMode);
+  const [demoMode, setDemoMode] = useState(() => (singleUserMode ? false : readInitialDemoMode()));
   const [workspaceData, setWorkspaceData] = useState(() => readInitialFinancialData(readInitialResetState()));
   const [session, setSession] = useState<Session | null>(null);
-  const [authLoading, setAuthLoading] = useState(Boolean(supabase));
+  const [authLoading, setAuthLoading] = useState(Boolean(supabase) && !singleUserMode);
 
   useEffect(() => {
     const onHashChange = () => setPageState(readInitialPage());
@@ -1104,9 +1116,10 @@ export default function App() {
   }, []);
 
   const setPage = (nextPage: string) => {
+    const resolvedPage = singleUserMode && (publicPages.includes(nextPage) || authPages.includes(nextPage)) ? "dashboard" : nextPage;
     setSidebarOpen(false);
-    if (window.location.hash !== `#${nextPage}`) window.location.hash = nextPage;
-    setPageState(nextPage);
+    if (window.location.hash !== `#${resolvedPage}`) window.location.hash = resolvedPage;
+    setPageState(resolvedPage);
     window.scrollTo({ top: 0, behavior: "smooth" });
   };
 
@@ -1125,7 +1138,7 @@ export default function App() {
   };
 
   useEffect(() => {
-    if (!supabase) {
+    if (singleUserMode || !supabase) {
       setAuthLoading(false);
       return;
     }
@@ -1160,10 +1173,10 @@ export default function App() {
       mounted = false;
       subscription.unsubscribe();
     };
-  }, []);
+  }, [singleUserMode]);
 
   useEffect(() => {
-    if (!supabase || !session || demoMode) return;
+    if (singleUserMode || !supabase || !session || demoMode) return;
 
     let mounted = true;
 
@@ -1210,7 +1223,7 @@ export default function App() {
     return () => {
       mounted = false;
     };
-  }, [session, demoMode]);
+  }, [session, demoMode, singleUserMode]);
 
   const updateFinancialData = (updater: FinancialDataUpdater) => {
     setWorkspaceData((current) => {
@@ -1427,7 +1440,7 @@ export default function App() {
   };
 
   const resetWorkspace = async () => {
-    if (supabase && session && !demoMode) {
+    if (!singleUserMode && supabase && session && !demoMode) {
       const [transactionResult, assetResult, loanResult] = await Promise.all([
         supabase.from("transactions").delete().eq("user_id", session.user.id),
         supabase.from("assets").delete().eq("user_id", session.user.id),
@@ -1473,12 +1486,12 @@ export default function App() {
     setSession(null);
     persistDemoMode(false);
     setDemoMode(false);
-    setPage("login");
+    setPage(singleUserMode ? "dashboard" : "login");
   };
 
-  const isAuthenticated = Boolean(session);
+  const isAuthenticated = singleUserMode || Boolean(session);
   const isAdmin = isAdminUser(session?.user ?? null);
-  const routeBlocked = isProtectedPage(page) && !authLoading && !isAuthenticated && !demoMode;
+  const routeBlocked = !singleUserMode && isProtectedPage(page) && !authLoading && !isAuthenticated && !demoMode;
   const adminBlocked = page === "admin" && !authLoading && isAuthenticated && !isAdmin;
   const visiblePage = routeBlocked ? "login" : adminBlocked ? "dashboard" : page;
   const isAppShell = isWorkspaceShellPage(visiblePage) && (isAuthenticated || demoMode);
@@ -1633,6 +1646,7 @@ function Brand({ compact = false }: { compact?: boolean }) {
 function MarketingNav({ page, setPage }: { page: string; setPage: (page: string) => void }) {
   const [open, setOpen] = useState(false);
   const { isAuthenticated, signOut, user } = useAuth();
+  const singleUserMode = isSingleUserMode();
   const links = navItems.filter((item) => item.group === "Public");
   const navigate = (nextPage: string) => {
     setOpen(false);
@@ -1663,7 +1677,12 @@ function MarketingNav({ page, setPage }: { page: string; setPage: (page: string)
         <Menu size={20} />
       </button>
       <div className="marketing-actions">
-        {isAuthenticated ? (
+        {singleUserMode ? (
+          <button className="primary-button" onClick={() => navigate("dashboard")}>
+            Open Planner
+            <ArrowRight size={17} />
+          </button>
+        ) : isAuthenticated ? (
           <>
             <button className="ghost-button" onClick={() => navigate("dashboard")}>
               {userDisplayName(user)}
@@ -1703,6 +1722,7 @@ function Sidebar({
 }) {
   const { isAdmin, signOut, user } = useAuth();
   const { demoMode } = useResetControls();
+  const singleUserMode = isSingleUserMode();
   const grouped = useMemo(() => {
     const byId = (ids: string[]) => ids.map((id) => navItems.find((item) => item.id === id)).filter(Boolean) as NavItem[];
     return [
@@ -1743,10 +1763,10 @@ function Sidebar({
         </nav>
         <div className="sidebar-account">
           <div>
-            <span>{demoMode ? "Demo workspace" : "Signed in"}</span>
-            <strong>{demoMode ? "Sample data" : userDisplayName(user)}</strong>
+            <span>{singleUserMode ? "Local workspace" : demoMode ? "Demo workspace" : "Signed in"}</span>
+            <strong>{singleUserMode ? "Single user" : demoMode ? "Sample data" : userDisplayName(user)}</strong>
           </div>
-          {!demoMode && (
+          {!singleUserMode && !demoMode && (
             <button className="ghost-button full" onClick={() => void signOut()}>
               <LogOut size={17} />
               Logout
@@ -1780,6 +1800,7 @@ function AppTopBar({
 }) {
   const { signOut, user } = useAuth();
   const { demoMode } = useResetControls();
+  const singleUserMode = isSingleUserMode();
   const current = navItems.find((item) => item.id === page);
   const title = current?.label ?? pageTitleOverrides[page] ?? "Workspace";
   const openAddEntry = () => {
@@ -1802,7 +1823,7 @@ function AppTopBar({
           <input placeholder="Search records" />
         </label>
         <button className="ghost-button" onClick={() => setPage("settings")}>
-          {demoMode ? "Demo mode" : userDisplayName(user)}
+          {singleUserMode ? "Local mode" : demoMode ? "Demo mode" : userDisplayName(user)}
         </button>
         <button className="ghost-button">
           <Bell size={17} />
@@ -1812,7 +1833,7 @@ function AppTopBar({
           <Plus size={17} />
           Add Entry
         </button>
-        {!demoMode && (
+        {!singleUserMode && !demoMode && (
           <button className="ghost-button" onClick={() => void signOut()}>
             <LogOut size={17} />
             Logout

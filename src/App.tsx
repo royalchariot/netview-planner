@@ -302,6 +302,78 @@ const emptyFinancialData: FinancialData = {
   transactions: [],
 };
 
+function financialRecordKey(...parts: Array<string | number | boolean | undefined | null>) {
+  return parts.map((part) => String(part ?? "").trim().toLowerCase()).join("::");
+}
+
+function removeSeedRows<T>(rows: T[], seedRows: T[], keyFor: (row: T) => string) {
+  const seedKeys = new Set(seedRows.map(keyFor));
+  return rows.filter((row) => !seedKeys.has(keyFor(row)));
+}
+
+function stripDemoSeedData(data: FinancialData): FinancialData {
+  const cleaned: FinancialData = {
+    ...data,
+    alerts: [],
+    assetBreakdown: [],
+    assets: removeSeedRows(data.assets, assets, (row) =>
+      financialRecordKey(row.name, row.category, row.purchaseValue, row.currentValue, row.linkedLoan),
+    ),
+    budgetLines: removeSeedRows(data.budgetLines, budgetLines, (row) => financialRecordKey(row.category, row.budget, row.spent)),
+    cashFlowSeries: removeSeedRows(data.cashFlowSeries, cashFlowSeries, (row) =>
+      financialRecordKey(row.label, row.income, row.expenses, row.savings, row.debt),
+    ),
+    documents: removeSeedRows(data.documents, documents, (row) => financialRecordKey(row.name, row.type, row.linked)),
+    forecastScenarios: removeSeedRows(data.forecastScenarios, forecastScenarios, (row) =>
+      financialRecordKey(row.scenario, row.netWorth, row.debtLeft),
+    ),
+    futurePlans: removeSeedRows(data.futurePlans, futurePlans, (row) =>
+      financialRecordKey(row.name, row.category, row.targetAmount, row.currentSaved, row.targetDate),
+    ),
+    goals: removeSeedRows(data.goals, goals, (row) => financialRecordKey(row.name, row.target, row.current, row.date)),
+    healthFactors: [],
+    incomeRules: removeSeedRows(data.incomeRules, incomeRules, (row) =>
+      financialRecordKey(row.name, row.source, row.amount, row.startDate, row.frequency),
+    ),
+    investments: removeSeedRows(data.investments, investments, (row) => financialRecordKey(row.name, row.symbol, row.currentValue)),
+    liabilityBreakdown: [],
+    loanSchedule: removeSeedRows(data.loanSchedule, loanSchedule, (row) => financialRecordKey(row.month, row.opening, row.payment)),
+    loans: removeSeedRows(data.loans, loans, (row) =>
+      financialRecordKey(row.name, row.type, row.originalAmount, row.currentBalance, row.monthlyPayment),
+    ),
+    netWorthSeries: removeSeedRows(data.netWorthSeries, netWorthSeries, (row) => financialRecordKey(row.label, row.value)),
+    receivables: removeSeedRows(data.receivables, receivables, (row) => financialRecordKey(row.person, row.reason, row.amountOwed)),
+    reminders: removeSeedRows(data.reminders, reminders, (row) => financialRecordKey(row.day, row.title, row.amount)),
+    survivalBudgets: removeSeedRows(data.survivalBudgets, survivalBudgets, (row) =>
+      financialRecordKey(row.name, row.expenseGroup, row.totalAmount, row.tenureMonths),
+    ),
+    transactions: removeSeedRows(data.transactions, transactions, (row) =>
+      financialRecordKey(row.date, row.type, row.account, row.category, row.source, row.amount),
+    ),
+  };
+
+  return deriveFinancialData({ ...emptyFinancialData, ...cleaned });
+}
+
+function hasPersonalFinancialRecords(data: FinancialData) {
+  return [
+    data.assets,
+    data.budgetLines,
+    data.documents,
+    data.forecastScenarios,
+    data.futurePlans,
+    data.goals,
+    data.incomeRules,
+    data.investments,
+    data.loanSchedule,
+    data.loans,
+    data.receivables,
+    data.reminders,
+    data.survivalBudgets,
+    data.transactions,
+  ].some((rows) => rows.length > 0);
+}
+
 type FinancialDataUpdater = (current: FinancialData) => FinancialData;
 type DataOperationResult = { ok: true } | { ok: false; message: string };
 
@@ -840,15 +912,18 @@ function calculateMonthlyPlannerSummary(data: FinancialData, reference = new Dat
   };
 }
 
-function readInitialFinancialData(reset: boolean) {
+function readInitialFinancialData(reset: boolean, singleUserMode = false) {
   try {
     const stored = window.localStorage.getItem(DATA_STORAGE_KEY);
-    if (stored) return deriveFinancialData({ ...emptyFinancialData, ...JSON.parse(stored) });
+    if (stored) {
+      const storedData = deriveFinancialData({ ...emptyFinancialData, ...JSON.parse(stored) });
+      return singleUserMode ? stripDemoSeedData(storedData) : storedData;
+    }
   } catch {
-    // Fall back to the built-in dataset when stored data cannot be read.
+    // Fall back to a clean workspace or built-in dataset when stored data cannot be read.
   }
 
-  return reset ? emptyFinancialData : demoFinancialData;
+  return reset || singleUserMode ? emptyFinancialData : demoFinancialData;
 }
 
 function persistFinancialData(data: FinancialData) {
@@ -1105,9 +1180,23 @@ export default function App() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [dataReset, setDataReset] = useState(readInitialResetState);
   const [demoMode, setDemoMode] = useState(() => (singleUserMode ? false : readInitialDemoMode()));
-  const [workspaceData, setWorkspaceData] = useState(() => readInitialFinancialData(readInitialResetState()));
+  const [workspaceData, setWorkspaceData] = useState(() => readInitialFinancialData(readInitialResetState(), singleUserMode));
   const [session, setSession] = useState<Session | null>(null);
   const [authLoading, setAuthLoading] = useState(Boolean(supabase) && !singleUserMode);
+
+  useEffect(() => {
+    if (!singleUserMode) return;
+
+    const cleanedData = stripDemoSeedData(workspaceData);
+    const isEmpty = !hasPersonalFinancialRecords(cleanedData);
+
+    persistDemoMode(false);
+    persistFinancialData(cleanedData);
+    persistResetState(isEmpty);
+    setDemoMode(false);
+    setWorkspaceData(cleanedData);
+    setDataReset(isEmpty);
+  }, [singleUserMode]);
 
   useEffect(() => {
     const onHashChange = () => setPageState(readInitialPage());
@@ -1464,6 +1553,17 @@ export default function App() {
   };
 
   const restoreDemoData = () => {
+    if (singleUserMode) {
+      persistDemoMode(false);
+      persistResetState(true);
+      clearPersistedFinancialData();
+      setDemoMode(false);
+      setWorkspaceData(emptyFinancialData);
+      setDataReset(true);
+      setPage("dashboard");
+      return;
+    }
+
     persistResetState(false);
     clearPersistedFinancialData();
     setWorkspaceData(demoFinancialData);
@@ -1472,6 +1572,17 @@ export default function App() {
   };
 
   const openDemoWorkspace = () => {
+    if (singleUserMode) {
+      persistDemoMode(false);
+      persistResetState(true);
+      clearPersistedFinancialData();
+      setDemoMode(false);
+      setWorkspaceData(emptyFinancialData);
+      setDataReset(true);
+      setPage("dashboard");
+      return;
+    }
+
     persistDemoMode(true);
     persistResetState(false);
     clearPersistedFinancialData();
@@ -2807,6 +2918,7 @@ function healthScoreLabel(score: number) {
 function DashboardPage({ setPage }: { setPage: (page: string) => void }) {
   const data = useFinancialData();
   const { demoMode, openDemoWorkspace } = useResetControls();
+  const singleUserMode = isSingleUserMode();
   const summary = calculateMonthlyPlannerSummary(data);
   const incomeForecast = buildIncomeForecastEntries(data.incomeRules, data.transactions);
   const hasFinancialData =
@@ -2845,10 +2957,12 @@ function DashboardPage({ setPage }: { setPage: (page: string) => void }) {
                 <span>{label}</span>
               </button>
             ))}
-            <button className="action-tile" onClick={openDemoWorkspace}>
-              <Gauge size={20} />
-              <span>View demo dashboard</span>
-            </button>
+            {!singleUserMode && (
+              <button className="action-tile" onClick={openDemoWorkspace}>
+                <Gauge size={20} />
+                <span>View demo dashboard</span>
+              </button>
+            )}
           </div>
         </section>
       </div>
@@ -5102,14 +5216,15 @@ function AiAdvisorPage() {
 
 function SettingsPage() {
   const { dataReset, resetWorkspace, restoreDemoData } = useResetControls();
+  const singleUserMode = isSingleUserMode();
   const [editing, setEditing] = useState("");
   const [notice, setNotice] = useState("");
   const [customCategory, setCustomCategory] = useState("");
   const [categoryRows, setCategoryRows] = useState<string[][]>([
-    ["Assets", "Cash & Bank", "Savings account", "Emergency Fund"],
-    ["Loans / Debts", "Bank Loans", "Car loan", "Chase Auto Loan"],
-    ["Future Plans", "Vehicle", "Down payment", "Tesla Model Y"],
-    ["Survival Budget", "Housing", "Rent / Mortgage", "Monthly Allocation"],
+    ["Assets", "Cash & Bank", "Savings account", "Account name"],
+    ["Loans / Debts", "Bank Loans", "Vehicle loan", "Lender name"],
+    ["Future Plans", "Vehicle", "Down payment", "Plan name"],
+    ["Survival Budget", "Housing", "Rent / Mortgage", "Budget name"],
   ]);
   const runReset = async () => {
     const confirmed = window.confirm("Delete all NetView workspace data from this account and browser, then start from scratch?");
@@ -5194,7 +5309,7 @@ function SettingsPage() {
               <Trash2 size={17} />
               Reset data
             </button>
-            {dataReset && (
+            {dataReset && !singleUserMode && (
               <button className="ghost-button" onClick={restoreDemoData}>
                 Load sample data
               </button>

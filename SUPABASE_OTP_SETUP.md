@@ -14,21 +14,41 @@ Add them locally in `.env.local`:
 ```bash
 VITE_SUPABASE_URL=https://your-project-ref.supabase.co
 VITE_SUPABASE_ANON_KEY=your-supabase-anon-key
+VITE_AUTH_REDIRECT_URL=https://royalchariot.github.io/netview-planner/#signup
 ```
 
 ## 2. Enable OTP-style signup emails
 
-In Supabase, open **Authentication > Email Templates**.
+In Supabase, open **Authentication > Email Templates**, then open **Confirm signup**.
 
-For the signup confirmation email, include the token variable in the email body:
+Replace the link-style content that uses `{{ .ConfirmationURL }}` with OTP text that includes `{{ .Token }}`:
 
-```text
-Your NetView verification code is: {{ .Token }}
+```html
+<h2>Your NetView Planner verification code</h2>
+<p>Enter this 6-digit code in NetView Planner to finish creating your account:</p>
+<h1>{{ .Token }}</h1>
+<p>This code expires soon. If you did not request it, you can ignore this email.</p>
 ```
 
 If the template only uses `{{ .ConfirmationURL }}`, users will receive a magic link instead of a numeric OTP.
 
-## 3. Redeploy GitHub Pages
+## 3. Fix redirect URLs
+
+In Supabase, open **Authentication > URL Configuration**.
+
+Set **Site URL** to:
+
+```text
+https://royalchariot.github.io/netview-planner/
+```
+
+Add this to **Redirect URLs**:
+
+```text
+https://royalchariot.github.io/netview-planner/**
+```
+
+## 4. Redeploy GitHub Pages
 
 Build with the env vars present:
 

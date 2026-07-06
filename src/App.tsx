@@ -103,6 +103,9 @@ const DATA_STORAGE_KEY = "netview:financial-data";
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL as string | undefined;
 const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY as string | undefined;
 const supabase = supabaseUrl && supabaseAnonKey ? createClient(supabaseUrl, supabaseAnonKey) : null;
+const authRedirectUrl =
+  (import.meta.env.VITE_AUTH_REDIRECT_URL as string | undefined) ||
+  "https://royalchariot.github.io/netview-planner/#signup";
 const pageTitleOverrides: Record<string, string> = {
   income: "Income",
   expenses: "Expenses",
@@ -1078,7 +1081,7 @@ function SignupPage({ setPage }: { setPage: (page: string) => void }) {
           currency: form.currency,
           tracking_focus: form.trackingFocus,
         },
-        emailRedirectTo: `${window.location.origin}${import.meta.env.BASE_URL}#signup`,
+        emailRedirectTo: authRedirectUrl,
       },
     });
 
@@ -1134,7 +1137,7 @@ function SignupPage({ setPage }: { setPage: (page: string) => void }) {
       type: "signup",
       email: form.email.trim(),
       options: {
-        emailRedirectTo: `${window.location.origin}${import.meta.env.BASE_URL}#signup`,
+        emailRedirectTo: authRedirectUrl,
       },
     });
     setSubmitting(false);

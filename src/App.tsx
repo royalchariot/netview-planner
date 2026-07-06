@@ -11,7 +11,6 @@ import {
   ChevronDown,
   ChevronLeft,
   ChevronRight,
-  CircleDollarSign,
   Download,
   FileSpreadsheet,
   FileText,
@@ -2893,34 +2892,15 @@ function OnboardingPage({ setPage }: { setPage: (page: string) => void }) {
   );
 }
 
-function quickActionTarget(label: string) {
-  const targets: Record<string, string> = {
-    "Add Income": "income",
-    "Add Expense": "expenses",
-    "Add Asset": "assets",
-    "Add Loan": "loans",
-    "Add Goal": "future-plans",
-    "Upload Document": "documents",
-    "Run Forecast": "monthly-cash-flow",
-  };
-
-  return targets[label] ?? "transactions";
-}
-
-function healthScoreLabel(score: number) {
-  if (score < 40) return "Needs attention";
-  if (score < 60) return "At risk";
-  if (score < 75) return "Stable";
-  if (score < 90) return "Strong";
-  return "Excellent";
-}
-
 function DashboardPage({ setPage }: { setPage: (page: string) => void }) {
   const data = useFinancialData();
   const { demoMode, openDemoWorkspace } = useResetControls();
   const singleUserMode = isSingleUserMode();
   const summary = calculateMonthlyPlannerSummary(data);
   const incomeForecast = buildIncomeForecastEntries(data.incomeRules, data.transactions);
+  const missedIncome = incomeForecast.filter((entry) => entry.status === "Missed income");
+  const expectedIncome = incomeForecast.filter((entry) => entry.status === "Expected income");
+  const overdueReceivables = data.receivables.filter((row) => row.status === "Overdue");
   const hasFinancialData =
     data.transactions.length > 0 ||
     summary.totalAssets > 0 ||
@@ -2928,42 +2908,122 @@ function DashboardPage({ setPage }: { setPage: (page: string) => void }) {
     data.receivables.length > 0 ||
     data.futurePlans.length > 0 ||
     data.survivalBudgets.length > 0;
-  const upcomingPayments = data.loans.slice(0, 4);
-  const upcomingIncome = incomeForecast.filter((entry) => entry.status === "Expected income").slice(0, 4);
-  const summaryCards = [
-    { label: "Total Cash in Hand", value: currency(summary.openingCash), detail: "Cash, bank, savings, wallet assets", tone: "success" as Tone, page: "assets" },
-    { label: "Total Assets", value: currency(summary.totalAssets), detail: "Owned assets only", tone: "info" as Tone, page: "assets" },
-    { label: "Total Money Owed to Me", value: currency(summary.moneyOwedToMe), detail: "Receivables remaining", tone: "info" as Tone, page: "receivables" },
-    { label: "Total Loans / Debts", value: currency(summary.totalDebts), detail: "Current balances owed", tone: summary.totalDebts > 0 ? "danger" as Tone : "success" as Tone, page: "loans" },
-    { label: "Net Worth", value: currency(summary.netWorthWithReceivables), detail: "Assets + receivables - debts", tone: summary.netWorthWithReceivables >= 0 ? "success" as Tone : "danger" as Tone, page: "monthly-cash-flow" },
-    { label: "This Month Income", value: currency(summary.postedIncome + summary.expectedIncome), detail: `${currency(summary.postedIncome)} posted · ${currency(summary.expectedIncome)} expected`, tone: "success" as Tone, page: "income" },
-    { label: "Required Keep-Aside", value: currency(summary.monthlyKeepAside), detail: "Survival + future plans + debt due", tone: "warning" as Tone, page: "monthly-cash-flow" },
-    { label: "Safe-to-Spend", value: currency(summary.safeToSpend), detail: summary.safeToSpend < 0 ? "Shortage warning" : "Free money after required reserves", tone: summary.safeToSpend < 0 ? "danger" as Tone : "success" as Tone, page: "monthly-cash-flow" },
+  const setupItems = [
+    {
+      done: data.incomeRules.length > 0 || data.transactions.some((row) => row.type === "Income"),
+      label: "Add income",
+      page: "income",
+    },
+    {
+      done: data.assets.length > 0,
+      label: "Add cash/assets",
+      page: "assets",
+    },
+    {
+      done: data.loans.length > 0,
+      label: "Add loans/debts",
+      page: "loans",
+    },
+    {
+      done: data.survivalBudgets.length > 0,
+      label: "Add survival budget",
+      page: "survival-budget",
+    },
+    {
+      done: data.futurePlans.length > 0,
+      label: "Add future plans",
+      page: "future-plans",
+    },
+  ];
+  const setupRemaining = setupItems.filter((item) => !item.done);
+  const attentionItems = [
+    ...(summary.safeToSpend < 0
+      ? [
+          {
+            action: "Review cash flow",
+            detail: `Short by ${currency(Math.abs(summary.safeToSpend))} after required reserves and expenses.`,
+            page: "monthly-cash-flow",
+            tone: "danger" as Tone,
+          },
+        ]
+      : []),
+    ...overdueReceivables.slice(0, 2).map((row) => ({
+      action: "Collect overdue money",
+      detail: `${row.person} owes ${currency(receivableRemaining(row))}.`,
+      page: "receivables",
+      tone: "danger" as Tone,
+    })),
+    ...missedIncome.slice(0, 2).map((entry) => ({
+      action: "Check missed income",
+      detail: `${entry.rule.name} was expected ${formatPlannerDate(entry.date)}.`,
+      page: "income",
+      tone: "warning" as Tone,
+    })),
+    ...setupRemaining.slice(0, 3).map((item) => ({
+      action: item.label,
+      detail: "Complete this setup item to improve monthly planning.",
+      page: item.page,
+      tone: "info" as Tone,
+    })),
+    ...data.loans.slice(0, 2).map((loan) => ({
+      action: "Upcoming loan payment",
+      detail: `${loan.name}: ${currency(loan.monthlyPayment)} monthly.`,
+      page: "loans",
+      tone: "warning" as Tone,
+    })),
+  ].slice(0, 5);
+  const nextUpItems = [
+    ...data.loans.slice(0, 3).map((loan) => ({
+      amount: currency(loan.monthlyPayment),
+      label: loan.name,
+      meta: `${loan.type} payment`,
+      page: "loans",
+      tone: "warning" as Tone,
+    })),
+    ...expectedIncome.slice(0, 3).map((entry) => ({
+      amount: currency(entry.rule.amount),
+      label: entry.rule.name,
+      meta: `${formatPlannerDate(entry.date)} income`,
+      page: "income",
+      tone: "success" as Tone,
+    })),
+  ].slice(0, 5);
+  const supportMetrics = [
+    { label: "Cash available", page: "monthly-cash-flow", value: currency(summary.cashAvailable) },
+    { label: "Keep aside", page: "monthly-cash-flow", value: currency(summary.monthlyKeepAside) },
+    { label: "Income", page: "income", value: `${currency(summary.postedIncome)} / ${currency(summary.postedIncome + summary.expectedIncome)}` },
+  ];
+  const quickActions = [
+    { label: "Add Income", page: "income", icon: Banknote },
+    { label: "Add Expense", page: "expenses", icon: CreditCard },
+    { label: "Add Asset", page: "assets", icon: Landmark },
+    { label: "Add Debt", page: "loans", icon: WalletCards },
   ];
 
   if (!hasFinancialData && !demoMode) {
     return (
       <div className="page-stack">
-        <section className="dashboard-empty">
-          <div>
-            <p className="eyebrow">Empty dashboard</p>
-            <h2>Build your monthly money plan.</h2>
-            <p>Add assets, receivables, loans, income, survival budget, and future plans to calculate what is safe to spend this month.</p>
+        <section className="dashboard-setup">
+          <div className="dashboard-setup-copy">
+            <p className="eyebrow">Setup checklist</p>
+            <h2>Build the dashboard around your real money.</h2>
+            <p>Complete these five items once. After that, this page becomes your monthly command center.</p>
           </div>
-          <div className="quick-actions">
-            {["Add Income", "Add Asset", "Add Loan", "Add Goal"].map((label) => (
-              <button className="action-tile" key={label} onClick={() => setPage(quickActionTarget(label))}>
-                <Plus size={20} />
-                <span>{label}</span>
+          <div className="setup-checklist">
+            {setupItems.map((item, index) => (
+              <button className={item.done ? "setup-check done" : "setup-check"} key={item.label} onClick={() => setPage(item.page)}>
+                <span className="setup-check-icon">{item.done ? <Check size={16} /> : index + 1}</span>
+                <span>{item.label}</span>
+                <strong>{item.done ? "Done" : "Add"}</strong>
               </button>
             ))}
-            {!singleUserMode && (
-              <button className="action-tile" onClick={openDemoWorkspace}>
-                <Gauge size={20} />
-                <span>View demo dashboard</span>
-              </button>
-            )}
           </div>
+          {!singleUserMode && (
+            <button className="ghost-button setup-demo-button" onClick={openDemoWorkspace}>
+              <Gauge size={17} />
+              View demo dashboard
+            </button>
+          )}
         </section>
       </div>
     );
@@ -2971,11 +3031,11 @@ function DashboardPage({ setPage }: { setPage: (page: string) => void }) {
 
   return (
     <div className="page-stack">
-      <div className="page-intro">
+      <div className="page-intro dashboard-intro">
         <div>
           <p className="eyebrow">{demoMode ? "Demo Mode" : "Monthly finance plan"}</p>
-          <h2>Dashboard</h2>
-          <p>For this month: what you have, what must be kept aside, and what is freely available.</p>
+          <h2>What needs attention now?</h2>
+          <p>A clean monthly view of safe-to-spend, required money, upcoming money movement, and next actions.</p>
         </div>
         <div className="button-row">
           {demoMode && (
@@ -2983,136 +3043,80 @@ function DashboardPage({ setPage }: { setPage: (page: string) => void }) {
               Use my data
             </button>
           )}
-          <button className="primary-button" onClick={() => setPage("transactions")}>
+          <button className="primary-button" onClick={() => setPage("income")}>
             <Plus size={17} />
-            Add Transaction
+            Add Income
           </button>
         </div>
       </div>
 
-      <Panel title="This Month Answer">
-        <div className="cash-answer-grid">
-          <MetricBlock label="Cash available this month" value={currency(summary.cashAvailable)} />
-          <MetricBlock label="Must keep aside" value={currency(summary.monthlyKeepAside)} />
-          <MetricBlock label="Actual expenses paid" value={currency(summary.actualExpenses)} />
-          <MetricBlock label="Safe-to-spend" value={currency(summary.safeToSpend)} />
+      <section className="dashboard-command">
+        <button className={summary.safeToSpend < 0 ? "safe-spend-card danger" : "safe-spend-card success"} onClick={() => setPage("monthly-cash-flow")}>
+          <span>{summary.safeToSpend < 0 ? "Shortage" : "Safe-to-spend"}</span>
+          <strong>{currency(summary.safeToSpend)}</strong>
+          <small>
+            {summary.safeToSpend < 0
+              ? "You need to cover required reserves and expenses before spending more."
+              : "Available after required reserves and paid expenses."}
+          </small>
+        </button>
+        <div className="dashboard-support-metrics">
+          {supportMetrics.map((metric) => (
+            <button className="support-metric" key={metric.label} onClick={() => setPage(metric.page)}>
+              <span>{metric.label}</span>
+              <strong>{metric.value}</strong>
+            </button>
+          ))}
         </div>
-        <p className={summary.safeToSpend < 0 ? "insight danger" : "insight success"}>
-          {summary.safeToSpend < 0
-            ? `Warning: safe-to-spend is negative by ${currency(Math.abs(summary.safeToSpend))}. Reduce spending, delay a plan, or collect receivables before committing more cash.`
-            : `${currency(summary.safeToSpend)} is freely available after survival reserves, future plan savings, debt repayments, and paid expenses.`}
-        </p>
-      </Panel>
+      </section>
 
-      <div className="summary-grid">
-        {summaryCards.map((card) => (
-          <SummaryCard key={card.label} {...card} onClick={() => setPage(card.page)} />
-        ))}
-      </div>
-
-      <div className="dashboard-grid three">
-        <Panel title="Required Keep-Aside">
-          <DataTable
-            columns={["Need", "This month amount", "Where it comes from"]}
-            rows={[
-              ["Survival money", currency(summary.survivalAllocation), "Survival budget allocation"],
-              ["Future plans", currency(summary.futurePlanSavingsRequired), "Monthly goal savings required"],
-              ["Debt repayment", currency(summary.loanRepaymentsDue), "Loan and credit payments due"],
-            ]}
-          />
-        </Panel>
-        <Panel title="Upcoming Payments">
-          <div className="list-stack">
-            {upcomingPayments.length > 0 ? (
-              upcomingPayments.map((loan) => (
-                <InfoLine
-                  key={loan.name}
-                  icon={CreditCard}
-                  title={`${loan.name}: ${currency(loan.monthlyPayment)}`}
-                  detail={`${loan.type} · ${currency(loan.currentBalance)} balance`}
-                />
-              ))
-            ) : (
-              <EmptyState title="No payments due." detail="Loan and repayment schedules will appear here." />
-            )}
-          </div>
-        </Panel>
-        <Panel title="Upcoming Income">
-          <div className="list-stack">
-            {upcomingIncome.length > 0 ? (
-              upcomingIncome.map((entry) => (
-                <InfoLine
-                  key={`${entry.rule.name}-${entry.date.toISOString()}`}
-                  icon={Banknote}
-                  title={`${entry.rule.name}: ${currency(entry.rule.amount)}`}
-                  detail={`${formatPlannerDate(entry.date)} · ${entry.rule.frequency}`}
-                />
-              ))
-            ) : (
-              <EmptyState title="No expected income." detail="Recurring income rules create future expected entries." />
-            )}
-          </div>
-        </Panel>
-      </div>
-
-      <div className="dashboard-grid">
-        <Panel title="Monthly Cash Flow Formula">
-          <DataTable
-            columns={["Formula line", "Amount"]}
-            rows={[
-              ["Opening cash", currency(summary.openingCash)],
-              ["Posted income this month", currency(summary.postedIncome)],
-              ["Expected income remaining", currency(summary.expectedIncome)],
-              ["Receivables expected this month", currency(summary.receivablesExpected)],
-              ["Actual expenses paid", `-${currency(summary.actualExpenses)}`],
-              ["Loan repayments due", `-${currency(summary.loanRepaymentsDue)}`],
-              ["Survival budget allocation", `-${currency(summary.survivalAllocation)}`],
-              ["Future plan savings required", `-${currency(summary.futurePlanSavingsRequired)}`],
-              ["Safe-to-spend result", currency(summary.safeToSpend)],
-            ]}
-          />
-        </Panel>
-        <Panel title="Module Structure">
-          <HierarchyList
-            rows={[
-              ["Assets", "Asset type", "Subtype", "Asset item"],
-              ["Money Owed to Me", "Ower type", "Reason", "Person / entity"],
-              ["Loans / Debts", "Loan type", "Subtype", "Lender"],
-              ["Income", "Income type", "Source", "Recurring entries"],
-              ["Future Plans", "Category", "Plan type", "Goal"],
-            ]}
-          />
-        </Panel>
-      </div>
-
-      <div className="dashboard-grid">
-        <Panel title="Monthly Insight">
-          <p className="insight info">
-            Net worth uses the requested formula: assets + money owed to you - debts = {currency(summary.netWorthWithReceivables)}.
-          </p>
-          <p className="muted">Safe-to-spend is cash available minus required keep-aside and actual expenses.</p>
-        </Panel>
-        <Panel title="Quick Actions">
-          <div className="quick-actions">
-            {[
-              { label: "Add Asset", page: "assets", icon: Landmark },
-              { label: "Add Receivable", page: "receivables", icon: CircleDollarSign },
-              { label: "Add Loan", page: "loans", icon: CreditCard },
-              { label: "Add Income", page: "income", icon: Banknote },
-              { label: "Set Survival Budget", page: "survival-budget", icon: WalletCards },
-              { label: "Add Future Plan", page: "future-plans", icon: Goal },
-            ].map((action) => {
-              const Icon = action.icon;
-              return (
-                <button className="action-tile" key={action.label} onClick={() => setPage(action.page)}>
-                  <Icon size={20} />
-                  <span>{action.label}</span>
+      <section className="dashboard-focus-grid">
+        <Panel title="Needs Attention">
+          {attentionItems.length > 0 ? (
+            <div className="attention-list">
+              {attentionItems.map((item) => (
+                <button className={`attention-item ${item.tone}`} key={`${item.action}-${item.detail}`} onClick={() => setPage(item.page)}>
+                  <span>{item.action}</span>
+                  <strong>{item.detail}</strong>
                 </button>
-              );
-            })}
-          </div>
+              ))}
+            </div>
+          ) : (
+            <EmptyState title="Nothing urgent." detail="Your month has no missed income, overdue receivables, or shortage warnings." />
+          )}
         </Panel>
-      </div>
+        <Panel title="Next Up">
+          {nextUpItems.length > 0 ? (
+            <div className="next-up-list">
+              {nextUpItems.map((item) => (
+                <button className={`next-up-item ${item.tone}`} key={`${item.label}-${item.meta}`} onClick={() => setPage(item.page)}>
+                  <span>
+                    <strong>{item.label}</strong>
+                    <small>{item.meta}</small>
+                  </span>
+                  <em>{item.amount}</em>
+                </button>
+              ))}
+            </div>
+          ) : (
+            <EmptyState title="No scheduled money movement." detail="Add income schedules and loan payments to see what is coming next." />
+          )}
+        </Panel>
+      </section>
+
+      <Panel title="Quick Actions">
+        <div className="dashboard-action-row">
+          {quickActions.map((action) => {
+            const Icon = action.icon;
+            return (
+              <button className="dashboard-action" key={action.label} onClick={() => setPage(action.page)}>
+                <Icon size={20} />
+                <span>{action.label}</span>
+              </button>
+            );
+          })}
+        </div>
+      </Panel>
     </div>
   );
 }

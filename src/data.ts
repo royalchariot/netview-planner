@@ -1,5 +1,4 @@
 import {
-  BadgeDollarSign,
   Banknote,
   BarChart3,
   Bell,
@@ -107,23 +106,25 @@ export type FeatureBlock = {
 export const navItems: NavItem[] = [
   { id: "home", label: "Home", group: "Public", icon: Home },
   { id: "features", label: "Features", group: "Public", icon: ClipboardList },
-  { id: "pricing", label: "Pricing", group: "Public", icon: BadgeDollarSign },
   { id: "about", label: "About", group: "Public", icon: Building2 },
+  { id: "security", label: "Security", group: "Public", icon: ShieldCheck },
   { id: "blog", label: "Education", group: "Public", icon: FileText },
   { id: "contact", label: "Contact", group: "Public", icon: Bell },
   { id: "login", label: "Login", group: "Auth", icon: LockKeyhole },
   { id: "signup", label: "Signup", group: "Auth", icon: Upload },
   { id: "onboarding", label: "Onboarding", group: "Auth", icon: Flag },
   { id: "dashboard", label: "Dashboard", group: "App", icon: Gauge },
+  { id: "calendar", label: "Calendar", group: "App", icon: CalendarDays },
   { id: "transactions", label: "Transactions", group: "App", icon: ReceiptText },
-  { id: "assets", label: "Assets", group: "App", icon: Landmark },
-  { id: "loans", label: "Loans", group: "App", icon: CreditCard },
-  { id: "net-worth", label: "Net Worth", group: "App", icon: LineChart },
+  { id: "income", label: "Income", group: "App", icon: Banknote },
+  { id: "expenses", label: "Expenses", group: "App", icon: ReceiptText },
   { id: "budget", label: "Budget", group: "App", icon: WalletCards },
   { id: "goals", label: "Goals", group: "App", icon: Goal },
   { id: "forecast", label: "Forecast", group: "App", icon: TrendingUp },
+  { id: "assets", label: "Assets", group: "App", icon: Landmark },
+  { id: "loans", label: "Loans", group: "App", icon: CreditCard },
+  { id: "net-worth", label: "Net Worth", group: "App", icon: LineChart },
   { id: "investments", label: "Investments", group: "App", icon: BarChart3 },
-  { id: "calendar", label: "Calendar", group: "App", icon: CalendarDays },
   { id: "reports", label: "Reports", group: "App", icon: FileText },
   { id: "documents", label: "Documents", group: "App", icon: ShieldCheck },
   { id: "ai-advisor", label: "AI Advisor", group: "App", icon: Bot },
@@ -519,34 +520,6 @@ export const featureBlocks: FeatureBlock[] = [
   },
 ];
 
-export const pricingPlans = [
-  {
-    name: "Free",
-    price: "$0",
-    note: "Manual tracking for one household.",
-    features: ["Dashboard", "Basic expenses", "Basic assets", "Manual CSV export"],
-  },
-  {
-    name: "Plus",
-    price: "$9",
-    note: "Better planning for goals and loans.",
-    features: ["Loan calculator", "Reports", "Goals", "Advanced budgets"],
-    featured: true,
-  },
-  {
-    name: "Pro",
-    price: "$19",
-    note: "Forecasting and advanced household planning.",
-    features: ["AI advisor", "Future projections", "Documents", "Family accounts"],
-  },
-  {
-    name: "Business",
-    price: "$29",
-    note: "For freelancers and small business owners.",
-    features: ["Tax categories", "Invoice income", "Business expenses", "Year-end reports"],
-  },
-];
-
 export const blogIdeas = [
   "How to calculate net worth",
   "How to pay off loans faster",
@@ -563,7 +536,7 @@ export const monthlyExpenses = 6780;
 export const liquidSavings = 18000;
 export const essentialExpenses = 4350;
 
-export const totalAssets = assets.reduce((sum, asset) => sum + asset.currentValue, 0);
+export const totalAssets = assets.reduce((sum, asset) => sum + asset.currentValue * (asset.ownership / 100), 0);
 export const totalLiabilities = loans.reduce((sum, loan) => sum + loan.currentBalance, 0);
 export const netWorth = totalAssets - totalLiabilities;
 export const monthlyCashFlow = monthlyIncome - monthlyExpenses;
@@ -573,13 +546,15 @@ export const debtToIncome = Math.round((monthlyDebtPayments / monthlyIncome) * 1
 export const emergencyMonths = +(liquidSavings / essentialExpenses).toFixed(1);
 
 export const healthFactors = [
-  { label: "Positive cash flow", weight: 20, score: 18 },
-  { label: "Emergency fund", weight: 20, score: 12 },
-  { label: "Debt-to-income ratio", weight: 20, score: 11 },
-  { label: "Savings rate", weight: 15, score: 12 },
-  { label: "Budget control", weight: 10, score: 7 },
-  { label: "Net worth growth", weight: 10, score: 9 },
-  { label: "Insurance/documents readiness", weight: 5, score: 4 },
+  { label: "Cash flow stability", weight: 15, score: 15 },
+  { label: "Savings rate", weight: 15, score: 15 },
+  { label: "Emergency fund", weight: 15, score: 12 },
+  { label: "Debt-to-income", weight: 15, score: 11 },
+  { label: "Budget control", weight: 10, score: 6 },
+  { label: "Debt risk", weight: 10, score: 3 },
+  { label: "Net worth trend", weight: 10, score: 10 },
+  { label: "Goal progress", weight: 5, score: 4 },
+  { label: "Records and readiness", weight: 5, score: 4 },
 ];
 
 export const financialHealthScore = healthFactors.reduce((sum, factor) => sum + factor.score, 0);
@@ -587,12 +562,12 @@ export const financialHealthScore = healthFactors.reduce((sum, factor) => sum + 
 export const adminCards = [
   { label: "Total users", value: "18,420", change: "+11.4%" },
   { label: "Active users", value: "9,805", change: "+6.2%" },
-  { label: "Paid users", value: "4,730", change: "+9.1%" },
-  { label: "Monthly revenue", value: "$86.2K", change: "+13.8%" },
-  { label: "Failed payments", value: "112", change: "-2.3%" },
-  { label: "Support tickets", value: "47", change: "+5 new" },
+  { label: "Contact messages", value: "47", change: "+5 new" },
+  { label: "Feedback items", value: "31", change: "+8 new" },
+  { label: "AI usage events", value: "1,284", change: "+14.2%" },
+  { label: "Security alerts", value: "6", change: "2 high" },
   { label: "Error logs", value: "18", change: "4 critical" },
-  { label: "Storage usage", value: "4.8 TB", change: "62%" },
+  { label: "Document storage", value: "4.8 TB", change: "62%" },
 ];
 
 export function currency(value: number) {
@@ -676,11 +651,11 @@ export const liabilityBreakdown = [
 ];
 
 export const mobileTabs = [
-  { label: "Home", icon: Home, page: "dashboard" },
+  { label: "Dashboard", icon: Home, page: "dashboard" },
   { label: "Transactions", icon: ReceiptText, page: "transactions" },
   { label: "Add", icon: CircleDollarSign, page: "transactions" },
   { label: "Goals", icon: PiggyBank, page: "goals" },
-  { label: "More", icon: ClipboardList, page: "settings" },
+  { label: "Settings", icon: ClipboardList, page: "settings" },
 ];
 
 export const onboardingSteps = [
@@ -723,13 +698,13 @@ export const forecastScenarios = [
 
 export const adminSections = [
   "Users",
-  "Plans & Subscriptions",
+  "Contact Messages",
   "Support Tickets",
-  "Feature Usage",
-  "System Logs",
-  "Content Management",
+  "Feedback",
+  "Error Logs",
+  "Data Storage Summary",
   "Security Alerts",
-  "AI Usage Monitoring",
+  "AI Usage",
 ];
 
 export const loanSchedule = [
@@ -760,10 +735,10 @@ export const settingsGroups = [
 ];
 
 export const trustItems = [
-  { title: "Bank-level encryption", icon: ShieldCheck },
-  { title: "Private by design", icon: LockKeyhole },
-  { title: "No selling user data", icon: BadgeDollarSign },
-  { title: "Export anytime", icon: Upload },
+  { title: "Secure authentication", icon: ShieldCheck },
+  { title: "Private workspace", icon: LockKeyhole },
+  { title: "No selling user data", icon: ShieldCheck },
+  { title: "Export and delete anytime", icon: Upload },
 ];
 
 export const solutionItems = [

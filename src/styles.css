@@ -443,7 +443,6 @@ a {
 
 .module-grid,
 .feature-page-grid,
-.pricing-grid,
 .blog-grid,
 .report-grid,
 .summary-grid,
@@ -461,7 +460,6 @@ a {
 .module-tile,
 .feature-mini,
 .feature-card,
-.pricing-card,
 .blog-card,
 .report-card,
 .summary-card,
@@ -585,6 +583,7 @@ a {
 .breakdown-head,
 .goal-top,
 .page-toolbar,
+.page-intro,
 .setting-row {
   align-items: center;
   display: flex;
@@ -627,7 +626,6 @@ a {
 }
 
 .feature-card,
-.pricing-card,
 .blog-card,
 .report-card,
 .goal-card,
@@ -656,55 +654,6 @@ a {
   justify-content: center;
   margin-bottom: 1rem;
   width: 46px;
-}
-
-.pricing-grid {
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  max-width: 1220px;
-  margin: 0 auto;
-  padding: 0 2rem 4.5rem;
-}
-
-.pricing-card {
-  display: flex;
-  flex-direction: column;
-  min-height: 410px;
-}
-
-.pricing-card.featured {
-  border-color: var(--teal);
-  box-shadow: var(--shadow);
-}
-
-.price {
-  align-items: baseline;
-  display: flex;
-  gap: 0.35rem;
-  margin: 0.7rem 0;
-}
-
-.price strong {
-  color: var(--navy);
-  font-size: 2.3rem;
-}
-
-.pricing-card ul {
-  display: grid;
-  gap: 0.75rem;
-  list-style: none;
-  margin: 1rem 0 auto;
-  padding: 0;
-}
-
-.pricing-card li {
-  align-items: center;
-  color: var(--ink);
-  display: flex;
-  gap: 0.55rem;
-}
-
-.pricing-card li svg {
-  color: var(--teal);
 }
 
 .blog-grid,
@@ -826,6 +775,53 @@ textarea {
   padding: 1.4rem;
 }
 
+.topbar-search {
+  align-items: center;
+  background: #fff;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  display: flex;
+  gap: 0.45rem;
+  min-height: 42px;
+  min-width: min(280px, 30vw);
+  padding: 0 0.75rem;
+}
+
+.topbar-search svg {
+  color: var(--muted);
+  flex: 0 0 auto;
+}
+
+.topbar-search input {
+  border: 0;
+  min-height: 38px;
+  padding: 0;
+}
+
+.page-intro,
+.dashboard-empty,
+.onboarding-wizard {
+  background: #fff;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 1.25rem;
+}
+
+.page-intro h2,
+.dashboard-empty h2 {
+  margin-bottom: 0.35rem;
+}
+
+.page-intro p,
+.dashboard-empty p {
+  margin-bottom: 0;
+}
+
+.dashboard-empty {
+  display: grid;
+  gap: 1.25rem;
+}
+
 .auth-divider {
   align-items: center;
   color: var(--muted);
@@ -936,6 +932,45 @@ textarea {
   gap: 1rem;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   margin-bottom: 2rem;
+}
+
+.onboarding-grid.single {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin-bottom: 0;
+}
+
+.onboarding-wizard {
+  display: grid;
+  gap: 1.25rem;
+  margin: 0 auto;
+  max-width: 920px;
+}
+
+.wizard-progress {
+  background: var(--soft-2);
+  border-radius: 999px;
+  height: 10px;
+  overflow: hidden;
+}
+
+.wizard-progress span {
+  background: var(--teal);
+  display: block;
+  height: 100%;
+}
+
+.wizard-step {
+  align-items: start;
+  display: flex;
+  gap: 1rem;
+}
+
+.wizard-step h2 {
+  margin-bottom: 0.35rem;
+}
+
+.wizard-actions {
+  justify-content: flex-end;
 }
 
 .step-card {
@@ -2162,7 +2197,6 @@ tr:last-child td {
   }
 
   .feature-page-grid,
-  .pricing-grid,
   .blog-grid,
   .report-grid,
   .goal-grid {
@@ -2337,7 +2371,6 @@ tr:last-child td {
   .feature-strip,
   .module-grid,
   .feature-page-grid,
-  .pricing-grid,
   .blog-grid,
   .report-grid,
   .summary-grid,
@@ -2384,7 +2417,6 @@ tr:last-child td {
   }
 
   .feature-page-grid,
-  .pricing-grid,
   .blog-grid,
   .report-grid,
   .contact-layout {

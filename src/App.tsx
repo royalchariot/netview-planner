@@ -15,6 +15,8 @@ import {
   FileText,
   Filter,
   Gauge,
+  Goal,
+  CreditCard,
   Landmark,
   LogOut,
   LockKeyhole,
@@ -70,7 +72,6 @@ import {
   netWorthSeries,
   onboardingSteps,
   percent,
-  pricingPlans,
   problemItems,
   progress,
   quickActions,
@@ -95,7 +96,7 @@ import {
   type Transaction,
 } from "./data";
 
-const publicPages = ["home", "features", "pricing", "about", "blog", "contact", "login", "signup", "forgot", "reset-password"];
+const publicPages = ["home", "features", "about", "security", "blog", "contact", "login", "signup", "forgot", "reset-password"];
 const authPages = ["login", "signup", "forgot", "reset-password", "onboarding"];
 const appPages = navItems.filter((item) => item.group === "App").map((item) => item.id);
 const RESET_STORAGE_KEY = "netview:data-reset";
@@ -307,11 +308,12 @@ function buildAssetBreakdown(assetRows: Asset[]) {
 
   assetRows.forEach((asset) => {
     const category = asset.category.toLowerCase();
-    if (/cash|bank|saving/.test(category)) add("Cash", asset.currentValue, "emerald");
-    else if (/real|property|home/.test(category)) add("Property", asset.currentValue, "blue");
-    else if (/vehicle|car|auto/.test(category)) add("Vehicles", asset.currentValue, "amber");
-    else if (/crypto/.test(category)) add("Crypto", asset.currentValue, "red");
-    else add("Investments", asset.currentValue, "violet");
+    const ownedValue = asset.currentValue * (asset.ownership / 100);
+    if (/cash|checking|saving|money|bank|emergency/.test(category)) add("Cash", ownedValue, "emerald");
+    else if (/real|property|home/.test(category)) add("Property", ownedValue, "blue");
+    else if (/vehicle|car|auto/.test(category)) add("Vehicles", ownedValue, "amber");
+    else if (/crypto/.test(category)) add("Crypto", ownedValue, "red");
+    else add("Investments", ownedValue, "violet");
   });
 
   return Array.from(groups.values()).filter((row) => row.value > 0);
@@ -336,21 +338,57 @@ function buildLiabilityBreakdown(loanRows: Loan[]) {
 }
 
 function deriveFinancialData(data: FinancialData): FinancialData {
-  const income = sumAmounts(data.transactions, (row) => row.amount > 0);
-  const expenses = Math.abs(sumAmounts(data.transactions, (row) => row.type === "Expense" && row.amount < 0));
-  const totalAssetValue = data.assets.reduce((sum, asset) => sum + asset.currentValue, 0);
+  const income = sumAmounts(data.transactions, (row) => row.type === "Income" && row.status === "Cleared");
+  const expenses = data.transactions
+    .filter((row) => row.type === "Expense" && row.status === "Cleared")
+    .reduce((sum, row) => sum + Math.abs(row.amount), 0);
+  const totalAssetValue = data.assets.reduce((sum, asset) => sum + asset.currentValue * (asset.ownership / 100), 0);
   const totalDebtValue = data.loans.reduce((sum, loan) => sum + loan.currentBalance, 0);
   const debtPayments = data.loans.reduce((sum, loan) => sum + loan.monthlyPayment, 0);
   const cashFlow = income - expenses;
   const savingsPercent = income > 0 ? Math.round((cashFlow / income) * 100) : 0;
   const debtPercent = income > 0 ? Math.round((debtPayments / income) * 100) : 0;
   const liquidAssetValue = data.assets
-    .filter((asset) => /cash|bank|saving|emergency/i.test(`${asset.name} ${asset.category}`))
-    .reduce((sum, asset) => sum + asset.currentValue, 0);
-  const essentialMonthlySpend = expenses > 0 ? Math.max(expenses * 0.65, 1) : 0;
+    .filter((asset) => /cash|checking|saving|money_market|bank|emergency/i.test(`${asset.name} ${asset.category}`))
+    .reduce((sum, asset) => sum + asset.currentValue * (asset.ownership / 100), 0);
+  const fixedBudgetSpend = data.budgetLines
+    .filter((line) => line.kind === "fixed")
+    .reduce((sum, line) => sum + line.spent, 0);
+  const essentialMonthlySpend = fixedBudgetSpend > 0 ? fixedBudgetSpend : expenses > 0 ? expenses * 0.65 : 0;
   const runway = essentialMonthlySpend > 0 ? +(liquidAssetValue / essentialMonthlySpend).toFixed(1) : 0;
   const assetRows = buildAssetBreakdown(data.assets);
   const liabilityRows = buildLiabilityBreakdown(data.loans);
+  const overBudgetCount = data.budgetLines.filter((line) => line.spent > line.budget).length;
+  const overBudgetPercent = data.budgetLines.length > 0 ? (overBudgetCount / data.budgetLines.length) * 100 : null;
+  const netWorthValues = data.netWorthSeries.map((row) => row.value);
+  const lastThreeNetWorth = netWorthValues.slice(-3);
+  const highInterestDebt = data.loans.some((loan) => loan.rate > 20 && loan.currentBalance > 0);
+  const allLoansCurrent = data.reminders.every((reminder) => reminder.tone !== "danger");
+  const fundedGoals = data.goals.filter((goal) => goal.current > 0);
+  const onTrackGoals = data.goals.filter((goal) => {
+    const months = monthsToGoal(goal);
+    return goal.current >= goal.target || (months > 0 && goal.monthly >= (goal.target - goal.current) / months);
+  });
+  const cashFlowScore = income <= 0 ? 0 : cashFlow < 0 ? 2 : cashFlow <= income * 0.05 ? 6 : cashFlow <= income * 0.15 ? 10 : 15;
+  const savingsScore = savingsPercent < 0 ? 0 : savingsPercent < 5 ? 4 : savingsPercent < 10 ? 7 : savingsPercent < 20 ? 11 : 15;
+  const emergencyScore = runway <= 0 ? 0 : runway < 1 ? 3 : runway < 3 ? 7 : runway < 6 ? 12 : 15;
+  const dtiScore = income <= 0 ? 0 : debtPercent < 20 ? 15 : debtPercent < 35 ? 11 : debtPercent < 45 ? 7 : debtPercent < 55 ? 3 : 0;
+  const budgetScore = overBudgetPercent === null ? 2 : overBudgetPercent === 0 ? 10 : overBudgetPercent < 10 ? 8 : overBudgetPercent <= 30 ? 6 : 3;
+  const debtRiskScore = data.loans.length === 0 ? 10 : highInterestDebt ? 3 : allLoansCurrent ? 9 : 6;
+  const netWorthTrendScore =
+    lastThreeNetWorth.length < 3
+      ? totalAssetValue - totalDebtValue > 0
+        ? 7
+        : 5
+      : lastThreeNetWorth[2] < lastThreeNetWorth[0]
+        ? 2
+        : lastThreeNetWorth[2] === lastThreeNetWorth[0]
+          ? 5
+          : lastThreeNetWorth[0] < lastThreeNetWorth[1] && lastThreeNetWorth[1] < lastThreeNetWorth[2]
+            ? 10
+            : 7;
+  const goalScore = data.goals.length === 0 ? 1 : fundedGoals.length === 0 ? 2 : onTrackGoals.length >= Math.ceil(data.goals.length / 2) ? 5 : 4;
+  const recordsScore = data.documents.length === 0 && data.reminders.length === 0 ? 1 : data.documents.length === 0 ? 2 : data.reminders.some((reminder) => reminder.tone === "danger") ? 4 : 5;
   const nextCashFlowSeries =
     income > 0 || expenses > 0 || debtPayments > 0
       ? [
@@ -363,13 +401,15 @@ function deriveFinancialData(data: FinancialData): FinancialData {
       ? [...data.netWorthSeries.filter((row) => row.label !== "Jul"), { label: "Jul", value: totalAssetValue - totalDebtValue }]
       : [];
   const nextHealthFactors = [
-    { label: "Positive cash flow", weight: 20, score: cashFlow > 0 ? 18 : 4 },
-    { label: "Emergency fund", weight: 20, score: Math.min(20, Math.round((runway / 6) * 20)) },
-    { label: "Debt-to-income ratio", weight: 20, score: debtPercent ? Math.max(0, 20 - Math.round(debtPercent / 2)) : income > 0 ? 20 : 0 },
-    { label: "Savings rate", weight: 15, score: Math.max(0, Math.min(15, Math.round((savingsPercent / 30) * 15))) },
-    { label: "Budget control", weight: 10, score: data.budgetLines.length ? 7 : 0 },
-    { label: "Net worth growth", weight: 10, score: totalAssetValue - totalDebtValue > 0 ? 8 : 0 },
-    { label: "Insurance/documents readiness", weight: 5, score: data.documents.length ? 4 : 0 },
+    { label: "Cash flow stability", weight: 15, score: cashFlowScore },
+    { label: "Savings rate", weight: 15, score: savingsScore },
+    { label: "Emergency fund", weight: 15, score: emergencyScore },
+    { label: "Debt-to-income", weight: 15, score: dtiScore },
+    { label: "Budget control", weight: 10, score: budgetScore },
+    { label: "Debt risk", weight: 10, score: debtRiskScore },
+    { label: "Net worth trend", weight: 10, score: netWorthTrendScore },
+    { label: "Goal progress", weight: 5, score: goalScore },
+    { label: "Records and readiness", weight: 5, score: recordsScore },
   ];
 
   return {
@@ -645,10 +685,10 @@ function renderPage(page: string, setPage: (page: string) => void) {
       return <HomePage setPage={setPage} />;
     case "features":
       return <FeaturesPage setPage={setPage} />;
-    case "pricing":
-      return <PricingPage setPage={setPage} />;
     case "about":
       return <AboutPage setPage={setPage} />;
+    case "security":
+      return <SecurityPage setPage={setPage} />;
     case "blog":
       return <BlogPage setPage={setPage} />;
     case "contact":
@@ -796,14 +836,16 @@ function Sidebar({
   const { isAdmin, signOut, user } = useAuth();
   const { demoMode } = useResetControls();
   const grouped = useMemo(() => {
-    const groups = ["App", ...(isAdmin ? ["Admin"] : []), "Public"] as const;
-    return groups.map((group) => ({
-      group,
-      items:
-        group === "Public"
-          ? navItems.filter((item) => ["home", "features", "pricing"].includes(item.id))
-          : navItems.filter((item) => item.group === group),
-    }));
+    const byId = (ids: string[]) => ids.map((id) => navItems.find((item) => item.id === id)).filter(Boolean) as NavItem[];
+    return [
+      { group: "Overview", items: byId(["dashboard", "calendar"]) },
+      { group: "Money Flow", items: byId(["transactions", "income", "expenses"]) },
+      { group: "Planning", items: byId(["budget", "goals", "forecast"]) },
+      { group: "Wealth", items: byId(["assets", "loans", "net-worth", "investments"]) },
+      { group: "Records", items: byId(["reports", "documents"]) },
+      { group: "Intelligence", items: byId(["ai-advisor"]) },
+      { group: "System", items: byId(["settings", ...(isAdmin ? ["admin"] : [])]) },
+    ];
   }, [isAdmin]);
 
   return (
@@ -887,6 +929,10 @@ function AppTopBar({
         <h1>{title}</h1>
       </div>
       <div className="topbar-actions">
+        <label className="topbar-search" aria-label="Search NetView records">
+          <Search size={16} />
+          <input placeholder="Search records" />
+        </label>
         <button className="ghost-button" onClick={() => setPage("settings")}>
           {demoMode ? "Demo mode" : userDisplayName(user)}
         </button>
@@ -933,11 +979,10 @@ function HomePage({ setPage }: { setPage: (page: string) => void }) {
       <section className="hero" style={{ backgroundImage: `url("${assetUrl("assets/netview-hero.png")}")` }}>
         <div className="hero-overlay" />
         <div className="hero-content">
-          <p className="eyebrow">Not just an expense tracker</p>
-          <h1>Your Complete Financial Life, Organized in One Dashboard.</h1>
+          <p className="eyebrow">Personal financial command center</p>
+          <h1>See your complete financial life in one clean dashboard.</h1>
           <p>
-            Track income, expenses, assets, loans, net worth, budgets, and future financial goals with one simple
-            planner.
+            Track income, expenses, assets, loans, goals, and net worth, then understand what to do next.
           </p>
           <div className="hero-actions">
             <button className="primary-button large" onClick={() => setPage("signup")}>
@@ -945,7 +990,7 @@ function HomePage({ setPage }: { setPage: (page: string) => void }) {
               <ArrowRight size={18} />
             </button>
             <button className="ghost-button large" onClick={openDemoWorkspace}>
-              View Demo
+              View Demo Dashboard
               <Gauge size={18} />
             </button>
           </div>
@@ -960,7 +1005,7 @@ function HomePage({ setPage }: { setPage: (page: string) => void }) {
       <section className="section-grid two-col">
         <div>
           <p className="eyebrow">The problem</p>
-          <h2>Your money is scattered across accounts, loans, cards, spreadsheets, and apps.</h2>
+          <h2>Most people track pieces of money, not the full picture.</h2>
           <p className="section-copy">
             It is hard to know whether you are moving forward when income, bills, asset values, and debt balances live
             in different places.
@@ -976,7 +1021,7 @@ function HomePage({ setPage }: { setPage: (page: string) => void }) {
       <section className="section-band">
         <div className="section-heading">
           <p className="eyebrow">The solution</p>
-          <h2>One command center for the full money picture.</h2>
+          <h2>One command center for your money.</h2>
         </div>
         <div className="module-grid">
           {solutionItems.map((item) => (
@@ -1004,13 +1049,13 @@ function HomePage({ setPage }: { setPage: (page: string) => void }) {
         <ProductPreview />
         <div>
           <p className="eyebrow">Visual preview</p>
-          <h2>Dashboard clarity without losing financial detail.</h2>
+          <h2>Review cash flow, debt, assets, goals, and risks in one place.</h2>
           <p className="section-copy">
             NetView Planner surfaces totals, trends, debt alerts, budget pressure, upcoming payments, and next actions
             in a layout built for repeated monthly review.
           </p>
           <button className="primary-button" onClick={openDemoWorkspace}>
-            Open demo dashboard
+            View demo dashboard
             <ArrowRight size={17} />
           </button>
         </div>
@@ -1045,8 +1090,10 @@ function HomePage({ setPage }: { setPage: (page: string) => void }) {
 }
 
 function FeaturesPage({ setPage }: { setPage: (page: string) => void }) {
+  const { openDemoWorkspace } = useResetControls();
+
   return (
-    <PublicPage title="Features" kicker="Complete financial planner" actionLabel="View dashboard" onAction={() => setPage("dashboard")}>
+    <PublicPage title="Features" kicker="Complete financial planner" actionLabel="View demo dashboard" onAction={openDemoWorkspace}>
       <div className="feature-page-grid">
         {featureBlocks.map((feature) => {
           const Icon = feature.icon;
@@ -1068,37 +1115,6 @@ function FeaturesPage({ setPage }: { setPage: (page: string) => void }) {
             </article>
           );
         })}
-      </div>
-    </PublicPage>
-  );
-}
-
-function PricingPage({ setPage }: { setPage: (page: string) => void }) {
-  return (
-    <PublicPage title="Pricing" kicker="Plans for every stage" actionLabel="Start Free" onAction={() => setPage("signup")}>
-      <div className="pricing-grid">
-        {pricingPlans.map((plan) => (
-          <article className={plan.featured ? "pricing-card featured" : "pricing-card"} key={plan.name}>
-            {plan.featured && <span className="badge success">Most popular</span>}
-            <h3>{plan.name}</h3>
-            <div className="price">
-              <strong>{plan.price}</strong>
-              <span>/month</span>
-            </div>
-            <p>{plan.note}</p>
-            <ul>
-              {plan.features.map((feature) => (
-                <li key={feature}>
-                  <Check size={17} />
-                  {feature}
-                </li>
-              ))}
-            </ul>
-            <button className={plan.featured ? "primary-button full" : "ghost-button full"} onClick={() => setPage("signup")}>
-              Choose {plan.name}
-            </button>
-          </article>
-        ))}
       </div>
     </PublicPage>
   );
@@ -1126,6 +1142,53 @@ function AboutPage({ setPage }: { setPage: (page: string) => void }) {
             "Which loan should I pay faster?",
           ].map((item) => (
             <CheckItem label={item} key={item} tone="success" />
+          ))}
+        </div>
+      </section>
+    </PublicPage>
+  );
+}
+
+function SecurityPage({ setPage }: { setPage: (page: string) => void }) {
+  const sections = [
+    {
+      title: "Authentication",
+      detail: "NetView uses Supabase Auth for verified email signup, password login, persistent sessions, logout, and password recovery.",
+    },
+    {
+      title: "User data separation",
+      detail: "The database schema is prepared with row-level security policies so each signed-in user can only access records tied to their own user id.",
+    },
+    {
+      title: "Document handling",
+      detail: "The document vault is designed for Supabase Storage with linked records, expiry dates, metadata, and delete controls.",
+    },
+    {
+      title: "Export and delete controls",
+      detail: "Users can export records, reset the workspace, and the schema supports account-level data deletion through cascading user ownership.",
+    },
+    {
+      title: "AI safety",
+      detail: "AI Advisor responses must show assumptions, numbers used, risk factors, next steps, and a clear educational-use disclaimer.",
+    },
+    {
+      title: "Financial advice disclaimer",
+      detail: "NetView explains financial data entered by the user. It does not guarantee outcomes or replace professional financial advice.",
+    },
+  ];
+
+  return (
+    <PublicPage title="Security" kicker="Trust and data control" actionLabel="Contact security" onAction={() => setPage("contact")}>
+      <section className="section-grid plain-section">
+        <div className="feature-page-grid compact">
+          {sections.map((section) => (
+            <article className="feature-card" key={section.title}>
+              <div className="icon-box">
+                <ShieldCheck size={23} />
+              </div>
+              <h3>{section.title}</h3>
+              <p>{section.detail}</p>
+            </article>
           ))}
         </div>
       </section>
@@ -1161,7 +1224,7 @@ function ContactPage() {
     name: "",
     email: "",
     subject: "",
-    category: "Product support",
+    category: "Product question",
     message: "",
   });
   const [notice, setNotice] = useState("");
@@ -1186,7 +1249,7 @@ function ContactPage() {
     }
 
     setSubmitting(true);
-    const { error } = await supabase.from("support_inquiries").insert({
+    const { error } = await supabase.from("contact_messages").insert({
       name: form.name.trim(),
       email: form.email.trim(),
       subject: form.subject.trim(),
@@ -1200,8 +1263,8 @@ function ContactPage() {
       return;
     }
 
-    setForm({ name: "", email: "", subject: "", category: "Product support", message: "" });
-    setNotice("Support request sent. We will review it and follow up by email.");
+    setForm({ name: "", email: "", subject: "", category: "Product question", message: "" });
+    setNotice("Message sent. We will review it and follow up by email.");
   };
 
   return (
@@ -1223,10 +1286,11 @@ function ContactPage() {
           <label>
             <span>Support category</span>
             <select value={form.category} onChange={(event) => updateForm("category", event.target.value)}>
-              <option>Product support</option>
-              <option>Security contact</option>
+              <option>Product question</option>
+              <option>Support</option>
+              <option>Security</option>
+              <option>Feedback</option>
               <option>Business inquiry</option>
-              <option>Billing</option>
             </select>
           </label>
           <label>
@@ -1235,7 +1299,7 @@ function ContactPage() {
           </label>
           {notice && <p className={notice.includes("sent") ? "form-message info" : "form-message danger"}>{notice}</p>}
           <button className="primary-button" type="submit" disabled={submitting}>
-            {submitting ? "Submitting..." : "Submit"}
+            {submitting ? "Sending message..." : "Send message"}
             <ArrowRight size={17} />
           </button>
         </form>
@@ -1780,32 +1844,51 @@ function LoadingPage() {
 }
 
 function OnboardingPage({ setPage }: { setPage: (page: string) => void }) {
+  const [stepIndex, setStepIndex] = useState(0);
+  const step = onboardingSteps[stepIndex];
+  const percentComplete = Math.round(((stepIndex + 1) / onboardingSteps.length) * 100);
+  const isLastStep = stepIndex === onboardingSteps.length - 1;
+
   return (
     <section className="onboarding-page">
-      <div className="section-heading">
+      <div className="section-heading compact-heading">
         <p className="eyebrow">Guided setup</p>
-        <h1>Build the dashboard before the first login lands empty.</h1>
-        <p>NetView collects the minimum starting data needed for cash flow, assets, debt, and goals.</p>
+        <h1>Build your first financial dashboard.</h1>
+        <p>Complete the essentials now, or skip any step and add details later from the workspace.</p>
       </div>
-      <div className="onboarding-grid">
-        {onboardingSteps.map((step, index) => (
-          <article className="step-card" key={step.title}>
-            <span className="step-number">{index + 1}</span>
-            <h3>{step.title}</h3>
-            <div className="chip-row">
-              {step.fields.map((field) => (
-                <span className="chip" key={field}>
-                  {field}
-                </span>
-              ))}
-            </div>
-          </article>
-        ))}
+      <div className="onboarding-wizard">
+        <div className="wizard-progress" aria-label={`Onboarding progress ${percentComplete}%`}>
+          <span style={{ width: `${percentComplete}%` }} />
+        </div>
+        <div className="wizard-step">
+          <span className="step-number">{stepIndex + 1}</span>
+          <div>
+            <p className="eyebrow">Step {stepIndex + 1} of {onboardingSteps.length}</p>
+            <h2>{step.title}</h2>
+            <p>These fields connect directly to dashboard calculations and can be edited later.</p>
+          </div>
+        </div>
+        <div className="onboarding-grid single">
+          {step.fields.map((field) => (
+            <label key={field}>
+              <span>{field}</span>
+              <input placeholder={field} />
+            </label>
+          ))}
+        </div>
+        <div className="button-row wizard-actions">
+          <button className="ghost-button" type="button" onClick={() => setStepIndex((value) => Math.max(0, value - 1))} disabled={stepIndex === 0}>
+            Back
+          </button>
+          <button className="ghost-button" type="button" onClick={() => (isLastStep ? setPage("dashboard") : setStepIndex((value) => value + 1))}>
+            Skip this step
+          </button>
+          <button className="primary-button" type="button" onClick={() => (isLastStep ? setPage("dashboard") : setStepIndex((value) => value + 1))}>
+            {isLastStep ? "Open dashboard" : "Save and continue"}
+            <ArrowRight size={17} />
+          </button>
+        </div>
       </div>
-      <button className="primary-button large" onClick={() => setPage("dashboard")}>
-        Your financial dashboard is ready
-        <ArrowRight size={18} />
-      </button>
     </section>
   );
 }
@@ -1824,12 +1907,25 @@ function quickActionTarget(label: string) {
   return targets[label] ?? "transactions";
 }
 
+function healthScoreLabel(score: number) {
+  if (score < 40) return "Needs attention";
+  if (score < 60) return "At risk";
+  if (score < 75) return "Stable";
+  if (score < 90) return "Strong";
+  return "Excellent";
+}
+
 function DashboardPage({ setPage }: { setPage: (page: string) => void }) {
   const {
     alerts,
     assetBreakdown,
+    budgetLines,
+    emergencyMonths,
+    goals,
     liabilityBreakdown,
+    loans,
     monthlyCashFlow,
+    monthlyDebtPayments,
     monthlyExpenses,
     monthlyIncome,
     netWorth,
@@ -1839,20 +1935,76 @@ function DashboardPage({ setPage }: { setPage: (page: string) => void }) {
     totalAssets,
     totalLiabilities,
     financialHealthScore,
+    transactions,
   } = useFinancialData();
+  const { demoMode, openDemoWorkspace } = useResetControls();
+  const hasFinancialData =
+    transactions.length > 0 || totalAssets > 0 || totalLiabilities > 0 || budgetLines.length > 0 || goals.length > 0;
+  const overBudgetLines = budgetLines.filter((line) => line.spent > line.budget).slice(0, 3);
+  const activeGoals = goals.slice(0, 3);
+  const highestInterestLoan = [...loans].sort((left, right) => right.rate - left.rate)[0];
+  const netWorthChange = netWorthSeries.length >= 2 ? netWorthSeries.at(-1)!.value - netWorthSeries.at(-2)!.value : 0;
   const summaryCards = [
-    { label: "Net Worth", value: currency(netWorth), detail: "Assets minus liabilities", tone: netWorth >= 0 ? "success" as Tone : "danger" as Tone, page: "net-worth" },
-    { label: "Monthly Income", value: currency(monthlyIncome), detail: "Expected this month", tone: "info" as Tone, page: "income" },
-    { label: "Monthly Expenses", value: currency(monthlyExpenses), detail: "Projected outflow", tone: monthlyExpenses > 0 ? "warning" as Tone : "info" as Tone, page: "expenses" },
-    { label: "Cash Flow", value: signedCurrency(monthlyCashFlow), detail: "Income minus expenses", tone: "success" as Tone, page: "cash-flow" },
-    { label: "Total Assets", value: currency(totalAssets), detail: "Current value", tone: "success" as Tone, page: "assets" },
-    { label: "Total Debt", value: currency(totalLiabilities), detail: "Remaining balances", tone: "danger" as Tone, page: "debt" },
-    { label: "Savings Rate", value: percent(savingsRate), detail: "Saved amount / income", tone: "info" as Tone, page: "savings-rate" },
-    { label: "Health Score", value: `${financialHealthScore}/100`, detail: financialHealthScore ? "Stable with debt pressure" : "Add data to score", tone: financialHealthScore ? "warning" as Tone : "info" as Tone, page: "financial-health" },
+    { label: "Net Worth", value: currency(netWorth), detail: `${signedCurrency(netWorthChange)} vs Jun · Assets minus active liabilities`, tone: netWorth >= 0 ? "success" as Tone : "danger" as Tone, page: "net-worth" },
+    { label: "Monthly Cash Flow", value: signedCurrency(monthlyCashFlow), detail: "Income minus cleared expenses", tone: monthlyCashFlow >= 0 ? "success" as Tone : "danger" as Tone, page: "cash-flow" },
+    { label: "Income", value: currency(monthlyIncome), detail: "Cleared income transactions this month", tone: "info" as Tone, page: "income" },
+    { label: "Expenses", value: currency(monthlyExpenses), detail: "Cleared expense transactions this month", tone: monthlyExpenses > 0 ? "warning" as Tone : "info" as Tone, page: "expenses" },
+    { label: "Total Debt", value: currency(totalLiabilities), detail: `${currency(monthlyDebtPayments)} due monthly`, tone: totalLiabilities > 0 ? "danger" as Tone : "info" as Tone, page: "debt" },
+    { label: "Savings Rate", value: percent(savingsRate), detail: "Net cash flow divided by income", tone: savingsRate >= 20 ? "success" as Tone : savingsRate >= 10 ? "info" as Tone : "warning" as Tone, page: "savings-rate" },
+    { label: "Emergency Fund", value: `${emergencyMonths} mo`, detail: "Liquid assets divided by essential expenses", tone: emergencyMonths >= 6 ? "success" as Tone : emergencyMonths >= 3 ? "warning" as Tone : "danger" as Tone, page: "assets" },
+    { label: "Financial Health", value: `${financialHealthScore}/100`, detail: `${healthScoreLabel(financialHealthScore)} · Tap for score breakdown`, tone: financialHealthScore >= 75 ? "success" as Tone : financialHealthScore >= 60 ? "warning" as Tone : "danger" as Tone, page: "financial-health" },
   ];
+
+  if (!hasFinancialData && !demoMode) {
+    return (
+      <div className="page-stack">
+        <section className="dashboard-empty">
+          <div>
+            <p className="eyebrow">Empty dashboard</p>
+            <h2>Build your first financial dashboard.</h2>
+            <p>
+              Add income, expenses, assets, and loans to calculate cash flow, net worth, debt pressure, and your
+              financial health score.
+            </p>
+          </div>
+          <div className="quick-actions">
+            {["Add Income", "Add Expense", "Add Asset", "Add Loan"].map((label) => (
+              <button className="action-tile" key={label} onClick={() => setPage(quickActionTarget(label))}>
+                <Plus size={20} />
+                <span>{label}</span>
+              </button>
+            ))}
+            <button className="action-tile" onClick={openDemoWorkspace}>
+              <Gauge size={20} />
+              <span>View demo dashboard</span>
+            </button>
+          </div>
+        </section>
+      </div>
+    );
+  }
 
   return (
     <div className="page-stack">
+      <div className="page-intro">
+        <div>
+          <p className="eyebrow">{demoMode ? "Demo Mode" : "Monthly overview"}</p>
+          <h2>Dashboard</h2>
+          <p>Your complete financial picture for July 2026.</p>
+        </div>
+        <div className="button-row">
+          {demoMode && (
+            <button className="ghost-button" onClick={() => setPage("onboarding")}>
+              Use my data
+            </button>
+          )}
+          <button className="primary-button" onClick={() => setPage("transactions")}>
+            <Plus size={17} />
+            Add Entry
+          </button>
+        </div>
+      </div>
+
       <div className="summary-grid">
         {summaryCards.map((card) => (
           <SummaryCard key={card.label} {...card} onClick={() => setPage(card.page)} />
@@ -1872,11 +2024,12 @@ function DashboardPage({ setPage }: { setPage: (page: string) => void }) {
         <Panel title="Assets vs Liabilities">
           <Breakdown title="Assets" rows={assetBreakdown} total={totalAssets} />
           <Breakdown title="Liabilities" rows={liabilityBreakdown} total={totalLiabilities} />
+          <p className="insight info">Net value: {currency(totalAssets - totalLiabilities)}</p>
         </Panel>
         <Panel title="Upcoming Payments">
           <div className="list-stack">
             {reminders.length > 0 ? (
-              reminders.map((reminder) => <ReminderRow key={reminder.title} reminder={reminder} />)
+              reminders.slice(0, 5).map((reminder) => <ReminderRow key={reminder.title} reminder={reminder} />)
             ) : (
               <EmptyState title="No reminders yet." detail="Add a money date to track upcoming payments." />
             )}
@@ -1893,19 +2046,81 @@ function DashboardPage({ setPage }: { setPage: (page: string) => void }) {
         </Panel>
       </div>
 
-      <Panel title="Quick Actions">
-        <div className="quick-actions">
-          {quickActions.map((action) => {
-            const Icon = action.icon;
-            return (
-              <button className="action-tile" key={action.label} onClick={() => setPage(quickActionTarget(action.label))}>
-                <Icon size={20} />
-                <span>{action.label}</span>
-              </button>
-            );
-          })}
-        </div>
-      </Panel>
+      <div className="dashboard-grid three">
+        <Panel title="Budget Pressure">
+          <div className="list-stack">
+            {overBudgetLines.length > 0 ? (
+              overBudgetLines.map((line) => (
+                <InfoLine
+                  key={line.category}
+                  icon={AlertTriangle}
+                  title={`${line.category} is ${currency(line.spent - line.budget)} over`}
+                  detail={`${currency(line.spent)} spent against ${currency(line.budget)} planned`}
+                />
+              ))
+            ) : (
+              <EmptyState title="No budget pressure." detail="Over-budget categories will appear here." />
+            )}
+          </div>
+        </Panel>
+        <Panel title="Goal Progress">
+          <div className="list-stack">
+            {activeGoals.length > 0 ? (
+              activeGoals.map((goal) => (
+                <InfoLine
+                  key={goal.name}
+                  icon={Goal}
+                  title={`${goal.name}: ${progress(goal.current, goal.target)}% funded`}
+                  detail={`${currency(goal.current)} saved of ${currency(goal.target)} target`}
+                />
+              ))
+            ) : (
+              <EmptyState title="No goals yet." detail="Add a financial goal to track target date progress." />
+            )}
+          </div>
+        </Panel>
+        <Panel title="Debt Payoff Snapshot">
+          {highestInterestLoan ? (
+            <div className="list-stack">
+              <InfoLine
+                icon={CreditCard}
+                title={`${highestInterestLoan.name} has the highest APR`}
+                detail={`${highestInterestLoan.rate}% APR · ${currency(highestInterestLoan.currentBalance)} balance`}
+              />
+              <p className="insight warning">
+                Paying extra toward this balance can reduce interest pressure before lower-rate loans.
+              </p>
+            </div>
+          ) : (
+            <EmptyState title="No active debt." detail="Loans and payoff opportunities will appear here." />
+          )}
+        </Panel>
+      </div>
+
+      <div className="dashboard-grid">
+        <Panel title="AI Monthly Insight">
+          <p className="insight info">
+            {monthlyCashFlow >= 0
+              ? `Your cash flow is positive at ${signedCurrency(monthlyCashFlow)}, but the highest APR debt should stay on the review list.`
+              : `Your cash flow is negative at ${signedCurrency(monthlyCashFlow)}. Review flexible spending and upcoming payments first.`}
+          </p>
+          <p className="muted">Educational guidance based on entered data. Not professional financial advice.</p>
+        </Panel>
+        <Panel title="Quick Actions">
+          <div className="quick-actions">
+            {quickActions.map((action) => {
+              const Icon = action.icon;
+              return (
+                <button className="action-tile" key={action.label} onClick={() => setPage(quickActionTarget(action.label))}>
+                  <Icon size={20} />
+                  <span>{action.label}</span>
+                </button>
+              );
+            })}
+          </div>
+        </Panel>
+      </div>
+
     </div>
   );
 }
@@ -3489,7 +3704,7 @@ function ProductPreview({ compact = false }: { compact?: boolean }) {
       <div className="preview-main">
         <div className="preview-header">
           <strong>Overview</strong>
-          <Badge tone="success">Live plan</Badge>
+          <Badge tone="success">Live dashboard</Badge>
         </div>
         <div className="preview-cards">
           <MetricBlock label="Net worth" value={currency(netWorth)} />

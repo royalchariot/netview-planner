@@ -21,6 +21,7 @@ import {
   LogOut,
   LockKeyhole,
   Menu,
+  Pencil,
   Plus,
   Search,
   ShieldCheck,
@@ -590,6 +591,11 @@ function removeFirstRecord<T>(rows: T[], predicate: (row: T) => boolean) {
   return index === -1 ? rows : rows.filter((_, rowIndex) => rowIndex !== index);
 }
 
+function replaceFirstRecord<T>(rows: T[], predicate: (row: T) => boolean, replacement: T) {
+  const index = rows.findIndex(predicate);
+  return index === -1 ? [replacement, ...rows] : rows.map((row, rowIndex) => (rowIndex === index ? replacement : row));
+}
+
 function sameTransaction(left: Transaction, right: Transaction) {
   return (
     left.date === right.date &&
@@ -791,7 +797,10 @@ type FinancialDataActions = {
   saveAsset: (record: Asset) => Promise<DataOperationResult>;
   saveLoan: (record: Loan) => Promise<DataOperationResult>;
   saveTransaction: (record: Transaction) => Promise<DataOperationResult>;
+  updateAsset: (record: Asset, previous?: Asset) => Promise<DataOperationResult>;
   updateFinancialData: (updater: FinancialDataUpdater) => void;
+  updateLoan: (record: Loan, previous?: Loan) => Promise<DataOperationResult>;
+  updateTransaction: (record: Transaction, previous?: Transaction) => Promise<DataOperationResult>;
 };
 
 type AuthContextValue = {
@@ -811,7 +820,10 @@ const FinancialDataActionsContext = createContext<FinancialDataActions>({
   saveAsset: async () => ({ ok: true }),
   saveLoan: async () => ({ ok: true }),
   saveTransaction: async () => ({ ok: true }),
+  updateAsset: async () => ({ ok: true }),
   updateFinancialData: () => undefined,
+  updateLoan: async () => ({ ok: true }),
+  updateTransaction: async () => ({ ok: true }),
 });
 const ResetControlsContext = createContext<ResetControls>({
   dataReset: false,
@@ -1012,6 +1024,41 @@ export default function App() {
     return { ok: true };
   };
 
+  const updateTransaction = async (record: Transaction, previous?: Transaction): Promise<DataOperationResult> => {
+    if (supabase && session && !demoMode && !record.id) return saveTransaction(record);
+
+    if (supabase && session && !demoMode && record.id) {
+      const { data, error } = await supabase
+        .from("transactions")
+        .update(transactionInsertPayload(record, session.user.id))
+        .eq("id", record.id)
+        .eq("user_id", session.user.id)
+        .select("*")
+        .single();
+
+      if (error) return { ok: false, message: error.message };
+
+      const saved = mapTransactionRow(data as DatabaseTransactionRow);
+      updateFinancialData((current) => ({
+        ...current,
+        transactions: replaceFirstRecord(current.transactions, (row) => row.id === saved.id, saved),
+      }));
+      return { ok: true };
+    }
+
+    const targetId = record.id ?? previous?.id;
+    const saved = { ...record, id: targetId ?? localRecordId("transaction") };
+    updateFinancialData((current) => ({
+      ...current,
+      transactions: replaceFirstRecord(
+        current.transactions,
+        (row) => (targetId ? row.id === targetId : previous ? sameTransaction(row, previous) : sameTransaction(row, record)),
+        saved,
+      ),
+    }));
+    return { ok: true };
+  };
+
   const deleteTransaction = async (record: Transaction): Promise<DataOperationResult> => {
     if (supabase && session && !demoMode && record.id) {
       const { error } = await supabase.from("transactions").delete().eq("id", record.id).eq("user_id", session.user.id);
@@ -1045,6 +1092,41 @@ export default function App() {
     return { ok: true };
   };
 
+  const updateAsset = async (record: Asset, previous?: Asset): Promise<DataOperationResult> => {
+    if (supabase && session && !demoMode && !record.id) return saveAsset(record);
+
+    if (supabase && session && !demoMode && record.id) {
+      const { data, error } = await supabase
+        .from("assets")
+        .update(assetInsertPayload(record, session.user.id))
+        .eq("id", record.id)
+        .eq("user_id", session.user.id)
+        .select("*")
+        .single();
+
+      if (error) return { ok: false, message: error.message };
+
+      const saved = mapAssetRow(data as DatabaseAssetRow);
+      updateFinancialData((current) => ({
+        ...current,
+        assets: replaceFirstRecord(current.assets, (row) => row.id === saved.id, saved),
+      }));
+      return { ok: true };
+    }
+
+    const targetId = record.id ?? previous?.id;
+    const saved = { ...record, id: targetId ?? localRecordId("asset") };
+    updateFinancialData((current) => ({
+      ...current,
+      assets: replaceFirstRecord(
+        current.assets,
+        (row) => (targetId ? row.id === targetId : previous ? sameAsset(row, previous) : sameAsset(row, record)),
+        saved,
+      ),
+    }));
+    return { ok: true };
+  };
+
   const deleteAsset = async (record: Asset): Promise<DataOperationResult> => {
     if (supabase && session && !demoMode && record.id) {
       const { error } = await supabase.from("assets").delete().eq("id", record.id).eq("user_id", session.user.id);
@@ -1075,6 +1157,41 @@ export default function App() {
 
     const saved = mapLoanRow(data as DatabaseLoanRow);
     updateFinancialData((current) => ({ ...current, loans: [saved, ...current.loans] }));
+    return { ok: true };
+  };
+
+  const updateLoan = async (record: Loan, previous?: Loan): Promise<DataOperationResult> => {
+    if (supabase && session && !demoMode && !record.id) return saveLoan(record);
+
+    if (supabase && session && !demoMode && record.id) {
+      const { data, error } = await supabase
+        .from("loans")
+        .update(loanInsertPayload(record, session.user.id))
+        .eq("id", record.id)
+        .eq("user_id", session.user.id)
+        .select("*")
+        .single();
+
+      if (error) return { ok: false, message: error.message };
+
+      const saved = mapLoanRow(data as DatabaseLoanRow);
+      updateFinancialData((current) => ({
+        ...current,
+        loans: replaceFirstRecord(current.loans, (row) => row.id === saved.id, saved),
+      }));
+      return { ok: true };
+    }
+
+    const targetId = record.id ?? previous?.id;
+    const saved = { ...record, id: targetId ?? localRecordId("loan") };
+    updateFinancialData((current) => ({
+      ...current,
+      loans: replaceFirstRecord(
+        current.loans,
+        (row) => (targetId ? row.id === targetId : previous ? sameLoan(row, previous) : sameLoan(row, record)),
+        saved,
+      ),
+    }));
     return { ok: true };
   };
 
@@ -1156,7 +1273,10 @@ export default function App() {
     saveAsset,
     saveLoan,
     saveTransaction,
+    updateAsset,
     updateFinancialData,
+    updateLoan,
+    updateTransaction,
   };
   const authValue = {
     authLoading,
@@ -2649,12 +2769,13 @@ function DashboardPage({ setPage }: { setPage: (page: string) => void }) {
 
 function TransactionsPage() {
   const { transactions } = useFinancialData();
-  const { deleteTransaction, saveTransaction } = useFinancialDataActions();
+  const { deleteTransaction, saveTransaction, updateTransaction } = useFinancialDataActions();
   const [transactionRows, setTransactionRows] = useState<Transaction[]>(transactions);
   const [activeTab, setActiveTab] = useState("All Transactions");
   const [showFilters, setShowFilters] = useState(false);
   const [showAddForm, setShowAddForm] = useState(false);
   const [showBulkUpload, setShowBulkUpload] = useState(false);
+  const [editingTransaction, setEditingTransaction] = useState<Transaction | null>(null);
   const [query, setQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState("All");
   const [notice, setNotice] = useState("");
@@ -2670,7 +2791,10 @@ function TransactionsPage() {
   });
 
   useEffect(() => {
-    const openAddForm = () => setShowAddForm(true);
+    const openAddForm = () => {
+      setEditingTransaction(null);
+      setShowAddForm(true);
+    };
 
     window.addEventListener("netview:open-add-transaction", openAddForm);
     return () => window.removeEventListener("netview:open-add-transaction", openAddForm);
@@ -2706,6 +2830,23 @@ function TransactionsPage() {
     setNotice("");
   };
 
+  const startEditTransaction = (transaction: Transaction) => {
+    setEditingTransaction(transaction);
+    setNewTransaction({
+      account: transaction.account,
+      amount: String(Math.abs(transaction.amount)),
+      category: transaction.category,
+      date: transaction.date,
+      method: transaction.method,
+      source: transaction.source,
+      status: transaction.status,
+      type: transaction.type,
+    });
+    setShowAddForm(true);
+    setShowBulkUpload(false);
+    setNotice("");
+  };
+
   const addTransaction = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     const parsedAmount = Number(newTransaction.amount);
@@ -2727,15 +2868,18 @@ function TransactionsPage() {
       status: newTransaction.status,
     };
 
-    const result = await saveTransaction(record);
+    const result = editingTransaction
+      ? await updateTransaction({ ...record, id: editingTransaction.id }, editingTransaction)
+      : await saveTransaction(record);
     if (!result.ok) {
       setNotice(`Could not save transaction: ${result.message}`);
       return;
     }
 
     setNewTransaction((current) => ({ ...current, source: "", amount: "" }));
+    setEditingTransaction(null);
     setShowAddForm(false);
-    setNotice("Transaction added.");
+    setNotice(editingTransaction ? "Transaction updated." : "Transaction added.");
   };
 
   const addSampleImport = async () => {
@@ -2816,7 +2960,13 @@ function TransactionsPage() {
           <h2>All Transactions</h2>
         </div>
         <div className="button-row">
-          <button className="primary-button" onClick={() => setShowAddForm((value) => !value)}>
+          <button
+            className="primary-button"
+            onClick={() => {
+              setEditingTransaction(null);
+              setShowAddForm((value) => !value);
+            }}
+          >
             <Plus size={17} />
             Add manual transaction
           </button>
@@ -2834,7 +2984,13 @@ function TransactionsPage() {
       {notice && <p className={/enter|could not/i.test(notice) ? "form-message danger" : "form-message info"}>{notice}</p>}
 
       {showAddForm && (
-        <Panel title="Add Manual Transaction" action={<button className="icon-button" onClick={() => setShowAddForm(false)} aria-label="Close add transaction form"><X size={16} /></button>}>
+        <Panel
+          title={editingTransaction ? "Edit Transaction" : "Add Manual Transaction"}
+          action={<button className="icon-button" onClick={() => {
+            setEditingTransaction(null);
+            setShowAddForm(false);
+          }} aria-label="Close transaction form"><X size={16} /></button>}
+        >
           <form className="transaction-form" onSubmit={addTransaction}>
             <label>
               <span>Date</span>
@@ -2881,7 +3037,7 @@ function TransactionsPage() {
               </select>
             </label>
             <button className="primary-button" type="submit">
-              Add transaction
+              {editingTransaction ? "Update transaction" : "Add transaction"}
               <ArrowRight size={17} />
             </button>
           </form>
@@ -2961,9 +3117,14 @@ function TransactionsPage() {
               <span className={transaction.amount >= 0 ? "money-positive" : "money-negative"}>{signedCurrency(transaction.amount)}</span>,
               transaction.method,
               <Badge tone={transaction.status === "Cleared" ? "success" : "warning"}>{transaction.status}</Badge>,
-              <button className="icon-button" type="button" aria-label={`Delete ${transaction.source}`} onClick={() => removeTransaction(transaction)}>
-                <Trash2 size={16} />
-              </button>,
+              <div className="table-actions">
+                <button className="icon-button" type="button" aria-label={`Edit ${transaction.source}`} onClick={() => startEditTransaction(transaction)}>
+                  <Pencil size={16} />
+                </button>
+                <button className="icon-button" type="button" aria-label={`Delete ${transaction.source}`} onClick={() => removeTransaction(transaction)}>
+                  <Trash2 size={16} />
+                </button>
+              </div>,
             ])}
           />
         ) : (
@@ -3276,7 +3437,7 @@ function LoansPage() {
 
   return (
     <div className="page-stack">
-      <PageToolbar title="Loans / Liabilities" actions={["Add loan", "Run simulator", "Export schedule"]} />
+      <PageToolbar title="Loans / Liabilities" actions={["Add loan", "Update loan", "Run simulator", "Export schedule"]} />
       {notice && <p className={/could not/i.test(notice) ? "form-message danger" : "form-message info"}>{notice}</p>}
       <Panel title="Loan Portfolio">
         <DataTable
@@ -4450,7 +4611,7 @@ function FeatureActionForm({
   }
 
   if (["Add asset", "Update value"].includes(action)) return <AssetActionForm action={action} onDone={onDone} />;
-  if (["Add loan", "Add debt"].includes(action)) return <LoanActionForm action={action} onDone={onDone} />;
+  if (["Add loan", "Add debt", "Update loan"].includes(action)) return <LoanActionForm action={action} onDone={onDone} />;
   if (action === "Set monthly budget") return <BudgetActionForm onDone={onDone} />;
   if (action === "Add goal") return <GoalActionForm onDone={onDone} />;
   if (action === "New scenario") return <ScenarioActionForm onDone={onDone} />;
@@ -4579,27 +4740,37 @@ function TransactionActionForm({ action, onDone }: { action: string; onDone: (me
 }
 
 function AssetActionForm({ action, onDone }: { action: string; onDone: (message: string) => void }) {
-  const { saveAsset } = useFinancialDataActions();
+  const { assets } = useFinancialData();
+  const { saveAsset, updateAsset } = useFinancialDataActions();
+  const [selectedAssetName, setSelectedAssetName] = useState(assets[0]?.name ?? "");
+  const isUpdate = action === "Update value";
+  const selectedAsset = isUpdate ? assets.find((asset) => asset.name === selectedAssetName) : undefined;
+
+  useEffect(() => {
+    if (isUpdate && !selectedAssetName && assets[0]) setSelectedAssetName(assets[0].name);
+  }, [assets, isUpdate, selectedAssetName]);
 
   const submit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     const data = new FormData(event.currentTarget);
-    const name = formString(data, "name");
-    const currentValue = formNumber(data, "currentValue");
+    const existing = isUpdate ? assets.find((asset) => asset.name === formString(data, "existingAsset", selectedAssetName)) : undefined;
+    const name = formString(data, "name") || existing?.name || "";
+    const currentValue = formNumber(data, "currentValue", existing?.currentValue ?? 0);
 
     if (!name || currentValue <= 0) return;
 
     const record: Asset = {
+      id: existing?.id,
       name,
-      category: formString(data, "category", "Bank balances"),
-      purchaseValue: formNumber(data, "purchaseValue", currentValue),
+      category: formString(data, "category", existing?.category ?? "Bank balances"),
+      purchaseValue: formNumber(data, "purchaseValue", existing?.purchaseValue ?? currentValue),
       currentValue,
-      ownership: formNumber(data, "ownership", 100),
-      linkedLoan: formString(data, "linkedLoan") || undefined,
+      ownership: formNumber(data, "ownership", existing?.ownership ?? 100),
+      linkedLoan: formString(data, "linkedLoan") || existing?.linkedLoan || undefined,
       updated: "July 2026",
     };
 
-    const result = await saveAsset(record);
+    const result = existing ? await updateAsset(record, existing) : await saveAsset(record);
     if (!result.ok) {
       onDone(`Could not save asset: ${result.message}`);
       return;
@@ -4610,34 +4781,42 @@ function AssetActionForm({ action, onDone }: { action: string; onDone: (message:
 
   return (
     <form className="feature-action-form" onSubmit={submit}>
+      {isUpdate && assets.length > 0 && (
+        <label>
+          <span>Existing asset</span>
+          <select name="existingAsset" value={selectedAssetName} onChange={(event) => setSelectedAssetName(event.target.value)}>
+            {assets.map((asset) => <option key={asset.id ?? asset.name}>{asset.name}</option>)}
+          </select>
+        </label>
+      )}
       <label>
         <span>Asset name</span>
-        <input name="name" placeholder="Emergency Fund" required />
+        <input key={`asset-name-${selectedAsset?.id ?? selectedAsset?.name ?? "new"}`} name="name" defaultValue={selectedAsset?.name ?? ""} placeholder="Emergency Fund" required />
       </label>
       <label>
         <span>Category</span>
-        <select name="category" defaultValue="Bank balances">
+        <select key={`asset-category-${selectedAsset?.id ?? selectedAsset?.name ?? "new"}`} name="category" defaultValue={selectedAsset?.category ?? "Bank balances"}>
           {assetCategories.map((category) => <option key={category}>{category}</option>)}
         </select>
       </label>
       <label>
         <span>Purchase value</span>
-        <input name="purchaseValue" inputMode="decimal" placeholder="10000" />
+        <input key={`asset-purchase-${selectedAsset?.id ?? selectedAsset?.name ?? "new"}`} name="purchaseValue" inputMode="decimal" defaultValue={selectedAsset?.purchaseValue ?? ""} placeholder="10000" />
       </label>
       <label>
         <span>Current value</span>
-        <input name="currentValue" inputMode="decimal" placeholder="12000" required />
+        <input key={`asset-current-${selectedAsset?.id ?? selectedAsset?.name ?? "new"}`} name="currentValue" inputMode="decimal" defaultValue={selectedAsset?.currentValue ?? ""} placeholder="12000" required />
       </label>
       <label>
         <span>Ownership %</span>
-        <input name="ownership" inputMode="decimal" defaultValue="100" />
+        <input key={`asset-ownership-${selectedAsset?.id ?? selectedAsset?.name ?? "new"}`} name="ownership" inputMode="decimal" defaultValue={selectedAsset?.ownership ?? 100} />
       </label>
       <label>
         <span>Linked loan</span>
-        <input name="linkedLoan" placeholder="Optional loan name" />
+        <input key={`asset-loan-${selectedAsset?.id ?? selectedAsset?.name ?? "new"}`} name="linkedLoan" defaultValue={selectedAsset?.linkedLoan ?? ""} placeholder="Optional loan name" />
       </label>
       <button className="primary-button" type="submit">
-        Save asset
+        {isUpdate ? "Update asset" : "Save asset"}
         <ArrowRight size={17} />
       </button>
     </form>
@@ -4645,83 +4824,101 @@ function AssetActionForm({ action, onDone }: { action: string; onDone: (message:
 }
 
 function LoanActionForm({ action, onDone }: { action: string; onDone: (message: string) => void }) {
-  const { saveLoan } = useFinancialDataActions();
+  const { loans } = useFinancialData();
+  const { saveLoan, updateLoan } = useFinancialDataActions();
+  const [selectedLoanName, setSelectedLoanName] = useState(loans[0]?.name ?? "");
+  const isUpdate = action === "Update loan";
+  const selectedLoan = isUpdate ? loans.find((loan) => loan.name === selectedLoanName) : undefined;
+
+  useEffect(() => {
+    if (isUpdate && !selectedLoanName && loans[0]) setSelectedLoanName(loans[0].name);
+  }, [isUpdate, loans, selectedLoanName]);
 
   const submit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     const data = new FormData(event.currentTarget);
-    const name = formString(data, "name");
-    const balance = formNumber(data, "currentBalance");
+    const existing = isUpdate ? loans.find((loan) => loan.name === formString(data, "existingLoan", selectedLoanName)) : undefined;
+    const name = formString(data, "name") || existing?.name || "";
+    const balance = formNumber(data, "currentBalance", existing?.currentBalance ?? 0);
 
     if (!name || balance <= 0) return;
 
-    const rate = formNumber(data, "rate");
-    const monthlyPayment = formNumber(data, "monthlyPayment");
+    const rate = formNumber(data, "rate", existing?.rate ?? 0);
+    const monthlyPayment = formNumber(data, "monthlyPayment", existing?.monthlyPayment ?? 0);
     const record: Loan = {
+      id: existing?.id,
       name,
-      type: formString(data, "type", "Personal loan"),
-      originalAmount: formNumber(data, "originalAmount", balance),
+      type: formString(data, "type", existing?.type ?? "Personal loan"),
+      originalAmount: formNumber(data, "originalAmount", existing?.originalAmount ?? balance),
       currentBalance: balance,
       rate,
       monthlyPayment,
-      start: "Jul 2026",
-      end: formString(data, "end", "Jul 2031"),
-      remainingMonths: formNumber(data, "remainingMonths", 60),
+      start: existing?.start ?? "Jul 2026",
+      end: formString(data, "end", existing?.end ?? "Jul 2031"),
+      remainingMonths: formNumber(data, "remainingMonths", existing?.remainingMonths ?? 60),
       interestLeft: Math.round(balance * (rate / 100) * 1.5),
-      linkedAsset: formString(data, "linkedAsset") || undefined,
+      linkedAsset: formString(data, "linkedAsset") || existing?.linkedAsset || undefined,
     };
 
-    const result = await saveLoan(record);
+    const result = existing ? await updateLoan(record, existing) : await saveLoan(record);
     if (!result.ok) {
       onDone(`Could not save loan: ${result.message}`);
       return;
     }
 
-    onDone(`${action === "Add debt" ? "Debt" : "Loan"} added.`);
+    onDone(action === "Update loan" ? "Loan updated." : `${action === "Add debt" ? "Debt" : "Loan"} added.`);
   };
 
   return (
     <form className="feature-action-form" onSubmit={submit}>
+      {isUpdate && loans.length > 0 && (
+        <label>
+          <span>Existing loan</span>
+          <select name="existingLoan" value={selectedLoanName} onChange={(event) => setSelectedLoanName(event.target.value)}>
+            {loans.map((loan) => <option key={loan.id ?? loan.name}>{loan.name}</option>)}
+          </select>
+        </label>
+      )}
       <label>
         <span>Loan name</span>
-        <input name="name" placeholder="Personal loan" required />
+        <input key={`loan-name-${selectedLoan?.id ?? selectedLoan?.name ?? "new"}`} name="name" defaultValue={selectedLoan?.name ?? ""} placeholder="Personal loan" required />
       </label>
       <label>
         <span>Type</span>
-        <select name="type" defaultValue="Personal loan">
+        <select key={`loan-type-${selectedLoan?.id ?? selectedLoan?.name ?? "new"}`} name="type" defaultValue={selectedLoan?.type ?? "Personal loan"}>
           {loanTypes.map((type) => <option key={type}>{type}</option>)}
         </select>
       </label>
       <label>
         <span>Original amount</span>
-        <input name="originalAmount" inputMode="decimal" placeholder="10000" />
+        <input key={`loan-original-${selectedLoan?.id ?? selectedLoan?.name ?? "new"}`} name="originalAmount" inputMode="decimal" defaultValue={selectedLoan?.originalAmount ?? ""} placeholder="10000" />
       </label>
       <label>
         <span>Current balance</span>
-        <input name="currentBalance" inputMode="decimal" placeholder="8500" required />
+        <input key={`loan-balance-${selectedLoan?.id ?? selectedLoan?.name ?? "new"}`} name="currentBalance" inputMode="decimal" defaultValue={selectedLoan?.currentBalance ?? ""} placeholder="8500" required />
       </label>
       <label>
         <span>Interest rate %</span>
-        <input name="rate" inputMode="decimal" placeholder="7.5" />
+        <input key={`loan-rate-${selectedLoan?.id ?? selectedLoan?.name ?? "new"}`} name="rate" inputMode="decimal" defaultValue={selectedLoan?.rate ?? ""} placeholder="7.5" />
       </label>
       <label>
         <span>Monthly payment</span>
-        <input name="monthlyPayment" inputMode="decimal" placeholder="250" />
+        <input key={`loan-payment-${selectedLoan?.id ?? selectedLoan?.name ?? "new"}`} name="monthlyPayment" inputMode="decimal" defaultValue={selectedLoan?.monthlyPayment ?? ""} placeholder="250" />
       </label>
       <label>
         <span>Remaining months</span>
-        <input name="remainingMonths" inputMode="numeric" defaultValue="60" />
+        <input key={`loan-months-${selectedLoan?.id ?? selectedLoan?.name ?? "new"}`} name="remainingMonths" inputMode="numeric" defaultValue={selectedLoan?.remainingMonths ?? 60} />
       </label>
       <label>
         <span>Payoff date</span>
-        <input name="end" defaultValue="Jul 2031" />
+        <input key={`loan-end-${selectedLoan?.id ?? selectedLoan?.name ?? "new"}`} name="end" defaultValue={selectedLoan?.end ?? "Jul 2031"} />
       </label>
       <label>
         <span>Linked asset</span>
-        <input name="linkedAsset" placeholder="Optional asset name" />
+        <input key={`loan-asset-${selectedLoan?.id ?? selectedLoan?.name ?? "new"}`} name="linkedAsset" defaultValue={selectedLoan?.linkedAsset ?? ""} placeholder="Optional asset name" />
       </label>
       <button className="primary-button" type="submit">
-        Save loan
+        {isUpdate ? "Update loan" : "Save loan"}
         <ArrowRight size={17} />
       </button>
     </form>

@@ -1728,6 +1728,13 @@ td {
   font-weight: 650;
 }
 
+.table-actions {
+  align-items: center;
+  display: flex;
+  gap: 0.4rem;
+  white-space: nowrap;
+}
+
 tr:last-child td {
   border-bottom: 0;
 }

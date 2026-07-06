@@ -223,6 +223,15 @@ a {
   transform: translateY(-1px);
 }
 
+.primary-button:disabled,
+.ghost-button:disabled,
+.danger-button:disabled,
+.text-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.62;
+  transform: none;
+}
+
 .ghost-button {
   background: #fff;
   border: 1px solid var(--line);
@@ -1028,6 +1037,32 @@ textarea {
 .sidebar-nav {
   display: grid;
   gap: 1.2rem;
+}
+
+.sidebar-account {
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 8px;
+  display: grid;
+  gap: 0.8rem;
+  margin-top: auto;
+  padding: 0.9rem;
+}
+
+.sidebar-account span {
+  color: rgba(255, 255, 255, 0.62);
+  display: block;
+  font-size: 0.74rem;
+  font-weight: 800;
+  margin-bottom: 0.25rem;
+  text-transform: uppercase;
+}
+
+.sidebar-account strong {
+  color: #fff;
+  display: block;
+  font-size: 0.92rem;
+  overflow-wrap: anywhere;
 }
 
 .nav-group {

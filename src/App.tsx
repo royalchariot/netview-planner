@@ -1,8 +1,7 @@
 import { createContext, useContext, useEffect, useMemo, useState, type CSSProperties, type FormEvent, type ReactNode } from "react";
-import { createClient } from "@supabase/supabase-js";
+import { createClient, type Session, type User } from "@supabase/supabase-js";
 import {
   AlertTriangle,
-  Apple,
   ArrowRight,
   Bell,
   Bot,
@@ -17,6 +16,7 @@ import {
   Filter,
   Gauge,
   Landmark,
+  LogOut,
   LockKeyhole,
   Menu,
   Plus,
@@ -95,17 +95,23 @@ import {
   type Transaction,
 } from "./data";
 
-const publicPages = ["home", "features", "pricing", "about", "blog", "contact", "login", "signup", "forgot"];
-const authPages = ["login", "signup", "forgot", "onboarding"];
+const publicPages = ["home", "features", "pricing", "about", "blog", "contact", "login", "signup", "forgot", "reset-password"];
+const authPages = ["login", "signup", "forgot", "reset-password", "onboarding"];
 const appPages = navItems.filter((item) => item.group === "App").map((item) => item.id);
 const RESET_STORAGE_KEY = "netview:data-reset";
 const DATA_STORAGE_KEY = "netview:financial-data";
+const DEMO_MODE_STORAGE_KEY = "netview:demo-mode";
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL as string | undefined;
 const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY as string | undefined;
 const supabase = supabaseUrl && supabaseAnonKey ? createClient(supabaseUrl, supabaseAnonKey) : null;
 const authRedirectUrl =
   (import.meta.env.VITE_AUTH_REDIRECT_URL as string | undefined) ||
   "https://royalchariot.github.io/netview-planner/";
+const passwordResetRedirectUrl = `${authRedirectUrl.replace(/\/?$/, "/")}#reset-password`;
+const adminEmails = ((import.meta.env.VITE_ADMIN_EMAILS as string | undefined) || "")
+  .split(",")
+  .map((email) => email.trim().toLowerCase())
+  .filter(Boolean);
 const pageTitleOverrides: Record<string, string> = {
   income: "Income",
   expenses: "Expenses",
@@ -117,6 +123,7 @@ const pageTitleOverrides: Record<string, string> = {
 
 function readInitialPage() {
   const hash = window.location.hash.replace("#", "");
+  if (hash.includes("type=recovery") || hash.includes("access_token=")) return "reset-password";
   return hash || "home";
 }
 
@@ -142,6 +149,27 @@ function persistResetState(reset: boolean) {
     window.localStorage.removeItem(RESET_STORAGE_KEY);
   } catch {
     // Storage can be unavailable in private browsing; the in-memory state still resets the app.
+  }
+}
+
+function readInitialDemoMode() {
+  try {
+    return window.localStorage.getItem(DEMO_MODE_STORAGE_KEY) === "true";
+  } catch {
+    return false;
+  }
+}
+
+function persistDemoMode(enabled: boolean) {
+  try {
+    if (enabled) {
+      window.localStorage.setItem(DEMO_MODE_STORAGE_KEY, "true");
+      return;
+    }
+
+    window.localStorage.removeItem(DEMO_MODE_STORAGE_KEY);
+  } catch {
+    // Demo mode still works for the current runtime when storage is unavailable.
   }
 }
 
@@ -368,6 +396,8 @@ function deriveFinancialData(data: FinancialData): FinancialData {
 
 type ResetControls = {
   dataReset: boolean;
+  demoMode: boolean;
+  openDemoWorkspace: () => void;
   resetWorkspace: () => void;
   restoreDemoData: () => void;
 };
@@ -376,14 +406,33 @@ type FinancialDataActions = {
   updateFinancialData: (updater: FinancialDataUpdater) => void;
 };
 
+type AuthContextValue = {
+  authLoading: boolean;
+  isAdmin: boolean;
+  isAuthenticated: boolean;
+  session: Session | null;
+  signOut: () => Promise<void>;
+  user: User | null;
+};
+
 const FinancialDataContext = createContext<FinancialData>(demoFinancialData);
 const FinancialDataActionsContext = createContext<FinancialDataActions>({
   updateFinancialData: () => undefined,
 });
 const ResetControlsContext = createContext<ResetControls>({
   dataReset: false,
+  demoMode: false,
+  openDemoWorkspace: () => undefined,
   resetWorkspace: () => undefined,
   restoreDemoData: () => undefined,
+});
+const AuthContext = createContext<AuthContextValue>({
+  authLoading: false,
+  isAdmin: false,
+  isAuthenticated: false,
+  session: null,
+  signOut: async () => undefined,
+  user: null,
 });
 
 function useFinancialData() {
@@ -398,11 +447,37 @@ function useResetControls() {
   return useContext(ResetControlsContext);
 }
 
+function useAuth() {
+  return useContext(AuthContext);
+}
+
+function isProtectedPage(page: string) {
+  return appPages.includes(page) || page === "admin" || page === "onboarding" || page in pageTitleOverrides;
+}
+
+function isWorkspaceShellPage(page: string) {
+  return appPages.includes(page) || page === "admin" || page in pageTitleOverrides;
+}
+
+function isAdminUser(user: User | null) {
+  if (!user) return false;
+  const metadataRole = user.app_metadata?.role || user.user_metadata?.role;
+  return metadataRole === "admin" || adminEmails.includes(user.email?.toLowerCase() ?? "");
+}
+
+function userDisplayName(user: User | null) {
+  if (!user) return "Account";
+  return user.user_metadata?.full_name || user.email || "Account";
+}
+
 export default function App() {
   const [page, setPageState] = useState(readInitialPage);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [dataReset, setDataReset] = useState(readInitialResetState);
+  const [demoMode, setDemoMode] = useState(readInitialDemoMode);
   const [workspaceData, setWorkspaceData] = useState(() => readInitialFinancialData(readInitialResetState()));
+  const [session, setSession] = useState<Session | null>(null);
+  const [authLoading, setAuthLoading] = useState(Boolean(supabase));
 
   useEffect(() => {
     const onHashChange = () => setPageState(readInitialPage());
@@ -417,9 +492,63 @@ export default function App() {
     window.scrollTo({ top: 0, behavior: "smooth" });
   };
 
+  const exitDemoModeForSession = () => {
+    persistDemoMode(false);
+    setDemoMode((wasDemo) => {
+      if (wasDemo) {
+        persistResetState(true);
+        clearPersistedFinancialData();
+        setWorkspaceData(emptyFinancialData);
+        setDataReset(true);
+      }
+
+      return false;
+    });
+  };
+
+  useEffect(() => {
+    if (!supabase) {
+      setAuthLoading(false);
+      return;
+    }
+
+    let mounted = true;
+
+    supabase.auth
+      .getSession()
+      .then(({ data }) => {
+        if (!mounted) return;
+        setSession(data.session);
+        if (data.session) exitDemoModeForSession();
+      })
+      .finally(() => {
+        if (mounted) setAuthLoading(false);
+      });
+
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange((event, nextSession) => {
+      setSession(nextSession);
+      setAuthLoading(false);
+
+      if (nextSession) {
+        exitDemoModeForSession();
+      }
+
+      if (event === "PASSWORD_RECOVERY") setPage("reset-password");
+    });
+
+    return () => {
+      mounted = false;
+      subscription.unsubscribe();
+    };
+  }, []);
+
   const resetWorkspace = () => {
+    persistDemoMode(false);
     persistResetState(true);
     clearPersistedFinancialData();
+    setDemoMode(false);
     setWorkspaceData(emptyFinancialData);
     setDataReset(true);
     setPage("onboarding");
@@ -433,6 +562,16 @@ export default function App() {
     setPage("dashboard");
   };
 
+  const openDemoWorkspace = () => {
+    persistDemoMode(true);
+    persistResetState(false);
+    clearPersistedFinancialData();
+    setDemoMode(true);
+    setWorkspaceData(demoFinancialData);
+    setDataReset(false);
+    setPage("dashboard");
+  };
+
   const updateFinancialData = (updater: FinancialDataUpdater) => {
     setWorkspaceData((current) => {
       const next = deriveFinancialData(updater(current));
@@ -441,32 +580,62 @@ export default function App() {
     });
   };
 
-  const isAppShell = appPages.includes(page) || page === "admin" || page in pageTitleOverrides;
+  const signOut = async () => {
+    if (supabase) await supabase.auth.signOut();
+    setSession(null);
+    persistDemoMode(false);
+    setDemoMode(false);
+    setPage("login");
+  };
+
+  const isAuthenticated = Boolean(session);
+  const isAdmin = isAdminUser(session?.user ?? null);
+  const routeBlocked = isProtectedPage(page) && !authLoading && !isAuthenticated && !demoMode;
+  const adminBlocked = page === "admin" && !authLoading && isAuthenticated && !isAdmin;
+  const visiblePage = routeBlocked ? "login" : adminBlocked ? "dashboard" : page;
+  const isAppShell = isWorkspaceShellPage(visiblePage) && (isAuthenticated || demoMode);
   const financialData = workspaceData;
-  const resetControls = { dataReset, resetWorkspace, restoreDemoData };
+  const resetControls = { dataReset, demoMode, openDemoWorkspace, resetWorkspace, restoreDemoData };
+  const authValue = {
+    authLoading,
+    isAdmin,
+    isAuthenticated,
+    session,
+    signOut,
+    user: session?.user ?? null,
+  };
+
+  useEffect(() => {
+    if (routeBlocked) setPage("login");
+    if (adminBlocked) setPage("dashboard");
+  }, [routeBlocked, adminBlocked]);
 
   return (
-    <FinancialDataContext.Provider value={financialData}>
-      <FinancialDataActionsContext.Provider value={{ updateFinancialData }}>
-        <ResetControlsContext.Provider value={resetControls}>
-          {isAppShell ? (
-            <div className="app-frame">
-              <Sidebar page={page} setPage={setPage} open={sidebarOpen} onClose={() => setSidebarOpen(false)} />
-              <div className="app-main">
-                <AppTopBar page={page} setPage={setPage} onMenu={() => setSidebarOpen(true)} />
-                <main className="app-content">{renderPage(page, setPage)}</main>
-                <MobileNav page={page} setPage={setPage} />
+    <AuthContext.Provider value={authValue}>
+      <FinancialDataContext.Provider value={financialData}>
+        <FinancialDataActionsContext.Provider value={{ updateFinancialData }}>
+          <ResetControlsContext.Provider value={resetControls}>
+            {isAppShell ? (
+              <div className="app-frame">
+                <Sidebar page={visiblePage} setPage={setPage} open={sidebarOpen} onClose={() => setSidebarOpen(false)} />
+                <div className="app-main">
+                  <AppTopBar page={visiblePage} setPage={setPage} onMenu={() => setSidebarOpen(true)} />
+                  <main className="app-content">{renderPage(visiblePage, setPage)}</main>
+                  <MobileNav page={visiblePage} setPage={setPage} />
+                </div>
               </div>
-            </div>
-          ) : (
-            <div className="site-shell">
-              <MarketingNav page={page} setPage={setPage} />
-              <main>{renderPage(page, setPage)}</main>
-            </div>
-          )}
-        </ResetControlsContext.Provider>
-      </FinancialDataActionsContext.Provider>
-    </FinancialDataContext.Provider>
+            ) : (
+              <div className="site-shell">
+                <MarketingNav page={visiblePage} setPage={setPage} />
+                <main>
+                  {authLoading && isProtectedPage(page) ? <LoadingPage /> : renderPage(visiblePage, setPage)}
+                </main>
+              </div>
+            )}
+          </ResetControlsContext.Provider>
+        </FinancialDataActionsContext.Provider>
+      </FinancialDataContext.Provider>
+    </AuthContext.Provider>
   );
 }
 
@@ -490,6 +659,8 @@ function renderPage(page: string, setPage: (page: string) => void) {
       return <SignupPage setPage={setPage} />;
     case "forgot":
       return <ForgotPasswordPage setPage={setPage} />;
+    case "reset-password":
+      return <ResetPasswordPage setPage={setPage} />;
     case "onboarding":
       return <OnboardingPage setPage={setPage} />;
     case "dashboard":
@@ -553,6 +724,7 @@ function Brand({ compact = false }: { compact?: boolean }) {
 
 function MarketingNav({ page, setPage }: { page: string; setPage: (page: string) => void }) {
   const [open, setOpen] = useState(false);
+  const { isAuthenticated, signOut, user } = useAuth();
   const links = navItems.filter((item) => item.group === "Public");
   const navigate = (nextPage: string) => {
     setOpen(false);
@@ -583,14 +755,28 @@ function MarketingNav({ page, setPage }: { page: string; setPage: (page: string)
         <Menu size={20} />
       </button>
       <div className="marketing-actions">
-        <button className="ghost-button" onClick={() => navigate("login")}>
-          <LockKeyhole size={17} />
-          Login
-        </button>
-        <button className="primary-button" onClick={() => navigate("signup")}>
-          Start Free
-          <ArrowRight size={17} />
-        </button>
+        {isAuthenticated ? (
+          <>
+            <button className="ghost-button" onClick={() => navigate("dashboard")}>
+              {userDisplayName(user)}
+            </button>
+            <button className="primary-button" onClick={() => void signOut()}>
+              <LogOut size={17} />
+              Logout
+            </button>
+          </>
+        ) : (
+          <>
+            <button className="ghost-button" onClick={() => navigate("login")}>
+              <LockKeyhole size={17} />
+              Login
+            </button>
+            <button className="primary-button" onClick={() => navigate("signup")}>
+              Start Free
+              <ArrowRight size={17} />
+            </button>
+          </>
+        )}
       </div>
     </header>
   );
@@ -607,8 +793,10 @@ function Sidebar({
   open: boolean;
   onClose: () => void;
 }) {
+  const { isAdmin, signOut, user } = useAuth();
+  const { demoMode } = useResetControls();
   const grouped = useMemo(() => {
-    const groups = ["App", "Admin", "Public"] as const;
+    const groups = ["App", ...(isAdmin ? ["Admin"] : []), "Public"] as const;
     return groups.map((group) => ({
       group,
       items:
@@ -616,7 +804,7 @@ function Sidebar({
           ? navItems.filter((item) => ["home", "features", "pricing"].includes(item.id))
           : navItems.filter((item) => item.group === group),
     }));
-  }, []);
+  }, [isAdmin]);
 
   return (
     <>
@@ -643,6 +831,18 @@ function Sidebar({
             </div>
           ))}
         </nav>
+        <div className="sidebar-account">
+          <div>
+            <span>{demoMode ? "Demo workspace" : "Signed in"}</span>
+            <strong>{demoMode ? "Sample data" : userDisplayName(user)}</strong>
+          </div>
+          {!demoMode && (
+            <button className="ghost-button full" onClick={() => void signOut()}>
+              <LogOut size={17} />
+              Logout
+            </button>
+          )}
+        </div>
       </aside>
       {open && <button className="sidebar-scrim" onClick={onClose} aria-label="Close navigation overlay" />}
     </>
@@ -668,6 +868,8 @@ function AppTopBar({
   setPage: (page: string) => void;
   onMenu: () => void;
 }) {
+  const { signOut, user } = useAuth();
+  const { demoMode } = useResetControls();
   const current = navItems.find((item) => item.id === page);
   const title = current?.label ?? pageTitleOverrides[page] ?? "Workspace";
   const openAddEntry = () => {
@@ -685,6 +887,9 @@ function AppTopBar({
         <h1>{title}</h1>
       </div>
       <div className="topbar-actions">
+        <button className="ghost-button" onClick={() => setPage("settings")}>
+          {demoMode ? "Demo mode" : userDisplayName(user)}
+        </button>
         <button className="ghost-button">
           <Bell size={17} />
           Jul 2026
@@ -693,6 +898,12 @@ function AppTopBar({
           <Plus size={17} />
           Add Entry
         </button>
+        {!demoMode && (
+          <button className="ghost-button" onClick={() => void signOut()}>
+            <LogOut size={17} />
+            Logout
+          </button>
+        )}
       </div>
     </header>
   );
@@ -715,6 +926,8 @@ function MobileNav({ page, setPage }: { page: string; setPage: (page: string) =>
 }
 
 function HomePage({ setPage }: { setPage: (page: string) => void }) {
+  const { openDemoWorkspace } = useResetControls();
+
   return (
     <>
       <section className="hero" style={{ backgroundImage: `url("${assetUrl("assets/netview-hero.png")}")` }}>
@@ -731,7 +944,7 @@ function HomePage({ setPage }: { setPage: (page: string) => void }) {
               Start Free
               <ArrowRight size={18} />
             </button>
-            <button className="ghost-button large" onClick={() => setPage("dashboard")}>
+            <button className="ghost-button large" onClick={openDemoWorkspace}>
               View Demo
               <Gauge size={18} />
             </button>
@@ -796,7 +1009,7 @@ function HomePage({ setPage }: { setPage: (page: string) => void }) {
             NetView Planner surfaces totals, trends, debt alerts, budget pressure, upcoming payments, and next actions
             in a layout built for repeated monthly review.
           </p>
-          <button className="primary-button" onClick={() => setPage("dashboard")}>
+          <button className="primary-button" onClick={openDemoWorkspace}>
             Open demo dashboard
             <ArrowRight size={17} />
           </button>
@@ -944,16 +1157,72 @@ function BlogPage({ setPage }: { setPage: (page: string) => void }) {
 }
 
 function ContactPage() {
+  const [form, setForm] = useState({
+    name: "",
+    email: "",
+    subject: "",
+    category: "Product support",
+    message: "",
+  });
+  const [notice, setNotice] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+
+  const updateForm = (field: keyof typeof form, value: string) => {
+    setForm((current) => ({ ...current, [field]: value }));
+    setNotice("");
+  };
+
+  const submitContact = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+
+    if (!form.name.trim() || !form.email.includes("@") || !form.subject.trim() || !form.message.trim()) {
+      setNotice("Complete your name, email, subject, and message.");
+      return;
+    }
+
+    if (!supabase) {
+      setNotice("Support submission is not configured yet. Add Supabase environment variables and redeploy.");
+      return;
+    }
+
+    setSubmitting(true);
+    const { error } = await supabase.from("support_inquiries").insert({
+      name: form.name.trim(),
+      email: form.email.trim(),
+      subject: form.subject.trim(),
+      category: form.category,
+      message: form.message.trim(),
+    });
+    setSubmitting(false);
+
+    if (error) {
+      setNotice(error.message);
+      return;
+    }
+
+    setForm({ name: "", email: "", subject: "", category: "Product support", message: "" });
+    setNotice("Support request sent. We will review it and follow up by email.");
+  };
+
   return (
     <PublicPage title="Contact" kicker="Support and inquiries">
       <section className="contact-layout">
-        <form className="form-panel">
-          <Field label="Name" placeholder="Full name" />
-          <Field label="Email" placeholder="you@example.com" />
-          <Field label="Subject" placeholder="How can we help?" />
+        <form className="form-panel" onSubmit={submitContact}>
+          <label>
+            <span>Name</span>
+            <input placeholder="Full name" value={form.name} onChange={(event) => updateForm("name", event.target.value)} />
+          </label>
+          <label>
+            <span>Email</span>
+            <input placeholder="you@example.com" type="email" value={form.email} onChange={(event) => updateForm("email", event.target.value)} />
+          </label>
+          <label>
+            <span>Subject</span>
+            <input placeholder="How can we help?" value={form.subject} onChange={(event) => updateForm("subject", event.target.value)} />
+          </label>
           <label>
             <span>Support category</span>
-            <select>
+            <select value={form.category} onChange={(event) => updateForm("category", event.target.value)}>
               <option>Product support</option>
               <option>Security contact</option>
               <option>Business inquiry</option>
@@ -962,10 +1231,11 @@ function ContactPage() {
           </label>
           <label>
             <span>Message</span>
-            <textarea rows={6} placeholder="Share the details" />
+            <textarea rows={6} placeholder="Share the details" value={form.message} onChange={(event) => updateForm("message", event.target.value)} />
           </label>
-          <button className="primary-button" type="button">
-            Submit
+          {notice && <p className={notice.includes("sent") ? "form-message info" : "form-message danger"}>{notice}</p>}
+          <button className="primary-button" type="submit" disabled={submitting}>
+            {submitting ? "Submitting..." : "Submit"}
             <ArrowRight size={17} />
           </button>
         </form>
@@ -980,32 +1250,87 @@ function ContactPage() {
 }
 
 function LoginPage({ setPage }: { setPage: (page: string) => void }) {
+  const { isAuthenticated } = useAuth();
+  const [form, setForm] = useState({ email: "", password: "" });
+  const [message, setMessage] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+
+  useEffect(() => {
+    if (isAuthenticated) setPage("dashboard");
+  }, [isAuthenticated]);
+
+  const updateForm = (field: keyof typeof form, value: string) => {
+    setForm((current) => ({ ...current, [field]: value }));
+    setMessage("");
+  };
+
+  const submitLogin = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+
+    if (!form.email.trim() || !form.password) {
+      setMessage("Enter your email and password.");
+      return;
+    }
+
+    if (!supabase) {
+      setMessage("Authentication is not configured yet. Add Supabase environment variables and redeploy.");
+      return;
+    }
+
+    setSubmitting(true);
+    const { error } = await supabase.auth.signInWithPassword({
+      email: form.email.trim(),
+      password: form.password,
+    });
+    setSubmitting(false);
+
+    if (error) {
+      setMessage(error.message);
+      return;
+    }
+
+    setPage("dashboard");
+  };
+
   return (
     <AuthLayout title="Welcome back" kicker="Login">
-      <form className="auth-form">
-        <Field label="Email" placeholder="you@example.com" />
-        <Field label="Password" placeholder="Password" type="password" />
+      <form className="auth-form" onSubmit={submitLogin}>
+        <label>
+          <span>Email</span>
+          <input
+            autoComplete="email"
+            placeholder="you@example.com"
+            type="email"
+            value={form.email}
+            onChange={(event) => updateForm("email", event.target.value)}
+          />
+        </label>
+        <label>
+          <span>Password</span>
+          <input
+            autoComplete="current-password"
+            placeholder="Password"
+            type="password"
+            value={form.password}
+            onChange={(event) => updateForm("password", event.target.value)}
+          />
+        </label>
         <div className="form-row compact">
           <label className="check-label">
-            <input type="checkbox" />
+            <input type="checkbox" defaultChecked />
             Remember me
           </label>
           <button className="text-button" type="button" onClick={() => setPage("forgot")}>
             Forgot password?
           </button>
         </div>
-        <button className="primary-button full" type="button" onClick={() => setPage("dashboard")}>
-          Login
+        {message && <p className="form-message danger">{message}</p>}
+        <button className="primary-button full" type="submit" disabled={submitting}>
+          {submitting ? "Logging in..." : "Login"}
           <ArrowRight size={17} />
         </button>
-        <div className="auth-divider">or</div>
-        <button className="ghost-button full" type="button">
-          <Search size={17} />
-          Login with Google
-        </button>
-        <button className="ghost-button full" type="button">
-          <Apple size={17} />
-          Login with Apple
+        <button className="text-button centered" type="button" onClick={() => setPage("signup")}>
+          Need an account? Create one
         </button>
       </form>
     </AuthLayout>
@@ -1013,6 +1338,7 @@ function LoginPage({ setPage }: { setPage: (page: string) => void }) {
 }
 
 function SignupPage({ setPage }: { setPage: (page: string) => void }) {
+  const { resetWorkspace, openDemoWorkspace } = useResetControls();
   const [phase, setPhase] = useState<"details" | "otp" | "welcome">("details");
   const [form, setForm] = useState({
     name: "",
@@ -1123,7 +1449,7 @@ function SignupPage({ setPage }: { setPage: (page: string) => void }) {
     }
 
     setMessage("");
-    setPhase("welcome");
+    resetWorkspace();
   };
 
   const resendOtp = async () => {
@@ -1199,12 +1525,12 @@ function SignupPage({ setPage }: { setPage: (page: string) => void }) {
               </div>
             ))}
           </div>
-          <button className="primary-button full" type="button" onClick={() => setPage("onboarding")}>
+          <button className="primary-button full" type="button" onClick={resetWorkspace}>
             Add my financial data
             <ArrowRight size={17} />
           </button>
-          <button className="ghost-button full" type="button" onClick={() => setPage("dashboard")}>
-            Skip and view demo dashboard
+          <button className="ghost-button full" type="button" onClick={openDemoWorkspace}>
+            View demo workspace
           </button>
         </div>
       </AuthLayout>
@@ -1303,19 +1629,152 @@ function SignupPage({ setPage }: { setPage: (page: string) => void }) {
 }
 
 function ForgotPasswordPage({ setPage }: { setPage: (page: string) => void }) {
+  const [email, setEmail] = useState("");
+  const [message, setMessage] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+
+  const submitReset = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+
+    if (!email.trim() || !email.includes("@")) {
+      setMessage("Enter the email address on your NetView account.");
+      return;
+    }
+
+    if (!supabase) {
+      setMessage("Password reset is not configured yet. Add Supabase environment variables and redeploy.");
+      return;
+    }
+
+    setSubmitting(true);
+    const { error } = await supabase.auth.resetPasswordForEmail(email.trim(), {
+      redirectTo: passwordResetRedirectUrl,
+    });
+    setSubmitting(false);
+
+    setMessage(error ? error.message : "Password reset email sent. Check your inbox for the reset link.");
+  };
+
   return (
     <AuthLayout title="Reset password" kicker="Account recovery">
-      <form className="auth-form">
+      <form className="auth-form" onSubmit={submitReset}>
         <p className="muted">Enter your email and NetView will send a reset link.</p>
-        <Field label="Email" placeholder="you@example.com" />
-        <button className="primary-button full" type="button">
-          Send reset link
+        <label>
+          <span>Email</span>
+          <input
+            autoComplete="email"
+            placeholder="you@example.com"
+            type="email"
+            value={email}
+            onChange={(event) => {
+              setEmail(event.target.value);
+              setMessage("");
+            }}
+          />
+        </label>
+        {message && (
+          <p className={message.includes("sent") ? "form-message info" : "form-message danger"}>{message}</p>
+        )}
+        <button className="primary-button full" type="submit" disabled={submitting}>
+          {submitting ? "Sending..." : "Send reset link"}
           <ArrowRight size={17} />
         </button>
         <button className="text-button centered" type="button" onClick={() => setPage("login")}>
           Back to login
         </button>
       </form>
+    </AuthLayout>
+  );
+}
+
+function ResetPasswordPage({ setPage }: { setPage: (page: string) => void }) {
+  const { isAuthenticated } = useAuth();
+  const [form, setForm] = useState({ password: "", confirmPassword: "" });
+  const [message, setMessage] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+
+  const updateForm = (field: keyof typeof form, value: string) => {
+    setForm((current) => ({ ...current, [field]: value }));
+    setMessage("");
+  };
+
+  const submitPassword = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+
+    if (form.password.length < 8) {
+      setMessage("Password must be at least 8 characters.");
+      return;
+    }
+
+    if (form.password !== form.confirmPassword) {
+      setMessage("Passwords do not match.");
+      return;
+    }
+
+    if (!supabase) {
+      setMessage("Password reset is not configured yet. Add Supabase environment variables and redeploy.");
+      return;
+    }
+
+    setSubmitting(true);
+    const { error } = await supabase.auth.updateUser({ password: form.password });
+    setSubmitting(false);
+
+    if (error) {
+      setMessage(error.message);
+      return;
+    }
+
+    setMessage("Password updated. You can continue to your dashboard.");
+  };
+
+  return (
+    <AuthLayout title="Create a new password" kicker="Account recovery">
+      <form className="auth-form" onSubmit={submitPassword}>
+        {!isAuthenticated && (
+          <p className="form-message danger">Open this page from the password reset email so NetView can verify your reset session.</p>
+        )}
+        <label>
+          <span>New password</span>
+          <input
+            autoComplete="new-password"
+            placeholder="At least 8 characters"
+            type="password"
+            value={form.password}
+            onChange={(event) => updateForm("password", event.target.value)}
+          />
+        </label>
+        <label>
+          <span>Confirm new password</span>
+          <input
+            autoComplete="new-password"
+            placeholder="Confirm new password"
+            type="password"
+            value={form.confirmPassword}
+            onChange={(event) => updateForm("confirmPassword", event.target.value)}
+          />
+        </label>
+        {message && (
+          <p className={message.includes("updated") ? "form-message info" : "form-message danger"}>{message}</p>
+        )}
+        <button className="primary-button full" type="submit" disabled={submitting || !isAuthenticated}>
+          {submitting ? "Updating..." : "Update password"}
+          <ArrowRight size={17} />
+        </button>
+        <button className="text-button centered" type="button" onClick={() => setPage(isAuthenticated ? "dashboard" : "login")}>
+          {isAuthenticated ? "Continue to dashboard" : "Back to login"}
+        </button>
+      </form>
+    </AuthLayout>
+  );
+}
+
+function LoadingPage() {
+  return (
+    <AuthLayout title="Checking your session" kicker="Secure access">
+      <div className="auth-form">
+        <p className="form-message info">Loading your NetView session...</p>
+      </div>
     </AuthLayout>
   );
 }

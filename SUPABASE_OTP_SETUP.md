@@ -57,3 +57,9 @@ GITHUB_PAGES=true npm run build
 ```
 
 Then publish the `dist` output to the `gh-pages` branch as before.
+
+## 5. Create database tables and RLS
+
+Open Supabase **SQL Editor**, paste the contents of `supabase/schema.sql`, and run it.
+
+This creates the NetView tables, indexes, profile trigger, and row-level security policies so users can only access their own financial records.

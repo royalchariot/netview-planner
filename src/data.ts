@@ -37,6 +37,7 @@ export type NavItem = {
 };
 
 export type Asset = {
+  id?: string;
   name: string;
   category: string;
   purchaseValue: number;
@@ -47,6 +48,7 @@ export type Asset = {
 };
 
 export type Loan = {
+  id?: string;
   name: string;
   type: string;
   originalAmount: number;
@@ -61,6 +63,7 @@ export type Loan = {
 };
 
 export type Transaction = {
+  id?: string;
   date: string;
   type: "Income" | "Expense" | "Transfer";
   account: string;

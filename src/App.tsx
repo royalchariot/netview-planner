@@ -268,6 +268,348 @@ const emptyFinancialData: FinancialData = {
 };
 
 type FinancialDataUpdater = (current: FinancialData) => FinancialData;
+type DataOperationResult = { ok: true } | { ok: false; message: string };
+
+type DatabaseTransactionType = "income" | "expense" | "transfer";
+type DatabaseTransactionStatus = "cleared" | "pending" | "review";
+type DatabaseAssetCategory =
+  | "cash"
+  | "real_estate"
+  | "vehicle"
+  | "stocks"
+  | "etf"
+  | "crypto"
+  | "retirement"
+  | "gold"
+  | "business"
+  | "collectibles"
+  | "other";
+type DatabaseLoanType =
+  | "mortgage"
+  | "auto"
+  | "student"
+  | "credit_card"
+  | "personal"
+  | "business"
+  | "medical"
+  | "family"
+  | "tax_debt"
+  | "other";
+
+type DatabaseTransactionRow = {
+  id: string;
+  date: string | null;
+  type: DatabaseTransactionType | string | null;
+  merchant_or_source: string | null;
+  amount: number | string | null;
+  payment_method: string | null;
+  status: DatabaseTransactionStatus | string | null;
+  tags: string[] | null;
+};
+
+type DatabaseAssetRow = {
+  id: string;
+  name: string | null;
+  category: DatabaseAssetCategory | string | null;
+  purchase_value: number | string | null;
+  current_value: number | string | null;
+  ownership_percent: number | string | null;
+  last_updated: string | null;
+  notes: string | null;
+  updated_at?: string | null;
+};
+
+type DatabaseLoanRow = {
+  id: string;
+  name: string | null;
+  type: DatabaseLoanType | string | null;
+  original_amount: number | string | null;
+  current_balance: number | string | null;
+  interest_rate: number | string | null;
+  monthly_payment: number | string | null;
+  start_date: string | null;
+  expected_end_date: string | null;
+  remaining_months: number | string | null;
+  notes: string | null;
+};
+
+const transactionTypeToDatabase: Record<Transaction["type"], DatabaseTransactionType> = {
+  Expense: "expense",
+  Income: "income",
+  Transfer: "transfer",
+};
+
+const databaseAssetCategoryLabels: Record<DatabaseAssetCategory, string> = {
+  business: "Business",
+  cash: "Cash",
+  collectibles: "Collectibles",
+  crypto: "Crypto",
+  etf: "ETF",
+  gold: "Gold",
+  other: "Other",
+  real_estate: "Real estate",
+  retirement: "Retirement",
+  stocks: "Stocks",
+  vehicle: "Vehicle",
+};
+
+const databaseLoanTypeLabels: Record<DatabaseLoanType, string> = {
+  auto: "Auto loan",
+  business: "Business loan",
+  credit_card: "Credit card",
+  family: "Family loan",
+  medical: "Medical debt",
+  mortgage: "Mortgage",
+  other: "Other debt",
+  personal: "Personal loan",
+  student: "Student loan",
+  tax_debt: "Tax debt",
+};
+
+function toNumber(value: number | string | null | undefined, fallback = 0) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function formatIsoDateValue(date: Date) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function toIsoDate(value: string) {
+  const trimmed = value.trim();
+  const isoMatch = trimmed.match(/^\d{4}-\d{2}-\d{2}/);
+  if (isoMatch) return isoMatch[0];
+
+  const parsed = new Date(trimmed);
+  if (!Number.isNaN(parsed.getTime())) return formatIsoDateValue(parsed);
+
+  return formatIsoDateValue(new Date());
+}
+
+function formatStoredDate(value: string | null | undefined) {
+  if (!value) return formatInputDate(formatIsoDateValue(new Date()));
+
+  const isoMatch = value.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (isoMatch) {
+    const [, year, month, day] = isoMatch;
+    return formatInputDate(`${year}-${month}-${day}`);
+  }
+
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return value;
+
+  return new Intl.DateTimeFormat("en-US", { day: "numeric", month: "short", year: "numeric" }).format(parsed);
+}
+
+function formatStoredMonth(value: string | null | undefined) {
+  if (!value) return new Intl.DateTimeFormat("en-US", { month: "long", year: "numeric" }).format(new Date());
+
+  const isoMatch = value.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  const parsed = isoMatch
+    ? new Date(Number(isoMatch[1]), Number(isoMatch[2]) - 1, Number(isoMatch[3]))
+    : new Date(value);
+
+  if (Number.isNaN(parsed.getTime())) return value;
+
+  return new Intl.DateTimeFormat("en-US", { month: "long", year: "numeric" }).format(parsed);
+}
+
+function localRecordId(prefix: string) {
+  if (typeof crypto !== "undefined" && "randomUUID" in crypto) return `${prefix}-${crypto.randomUUID()}`;
+  return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+
+function readTaggedValue(tags: string[] | null | undefined, prefix: string, fallback: string) {
+  const tag = tags?.find((value) => value.startsWith(prefix));
+  return tag ? tag.slice(prefix.length) : fallback;
+}
+
+function metadataNotes(values: Record<string, string | undefined>) {
+  const entries = Object.entries(values).filter(([, value]) => value && value.trim());
+  return entries.length ? JSON.stringify(Object.fromEntries(entries)) : null;
+}
+
+function parseMetadataNotes(notes: string | null | undefined) {
+  if (!notes) return {};
+
+  try {
+    const parsed: unknown = JSON.parse(notes);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+
+    return Object.fromEntries(
+      Object.entries(parsed as Record<string, unknown>).filter((entry): entry is [string, string] => typeof entry[1] === "string"),
+    );
+  } catch {
+    return {};
+  }
+}
+
+function databaseTransactionType(type: string | null | undefined): Transaction["type"] {
+  if (type === "income") return "Income";
+  if (type === "transfer") return "Transfer";
+  return "Expense";
+}
+
+function databaseAssetCategory(category: string | null | undefined): DatabaseAssetCategory {
+  const value = (category ?? "").toLowerCase();
+  if (/cash|bank|checking|saving|money|emergency/.test(value)) return "cash";
+  if (/real|property|home|house/.test(value)) return "real_estate";
+  if (/vehicle|car|auto/.test(value)) return "vehicle";
+  if (/etf/.test(value)) return "etf";
+  if (/crypto|bitcoin|ethereum/.test(value)) return "crypto";
+  if (/retirement|401|ira/.test(value)) return "retirement";
+  if (/gold|metal/.test(value)) return "gold";
+  if (/business/.test(value)) return "business";
+  if (/collect/.test(value)) return "collectibles";
+  if (/stock|brokerage|investment/.test(value)) return "stocks";
+  return "other";
+}
+
+function databaseLoanType(type: string | null | undefined): DatabaseLoanType {
+  const value = (type ?? "").toLowerCase();
+  if (/mortgage|home/.test(value)) return "mortgage";
+  if (/auto|vehicle|car/.test(value)) return "auto";
+  if (/student/.test(value)) return "student";
+  if (/credit|card/.test(value)) return "credit_card";
+  if (/business/.test(value)) return "business";
+  if (/medical/.test(value)) return "medical";
+  if (/family/.test(value)) return "family";
+  if (/tax/.test(value)) return "tax_debt";
+  if (/personal/.test(value)) return "personal";
+  return "other";
+}
+
+function mapTransactionRow(row: DatabaseTransactionRow): Transaction {
+  const type = databaseTransactionType(row.type);
+  const rawAmount = toNumber(row.amount);
+
+  return {
+    id: row.id,
+    account: readTaggedValue(row.tags, "account:", "Checking"),
+    amount: type === "Income" ? rawAmount : -Math.abs(rawAmount),
+    category: readTaggedValue(row.tags, "category:", type === "Income" ? "Income" : type === "Transfer" ? "Transfer" : "Uncategorized"),
+    date: formatStoredDate(row.date),
+    method: row.payment_method || (type === "Income" ? "ACH" : "Card"),
+    source: row.merchant_or_source || "Untitled transaction",
+    status: row.status === "cleared" ? "Cleared" : "Pending",
+    type,
+  };
+}
+
+function mapAssetRow(row: DatabaseAssetRow): Asset {
+  const meta = parseMetadataNotes(row.notes);
+  const fallbackCategory = databaseAssetCategoryLabels[databaseAssetCategory(row.category)];
+
+  return {
+    id: row.id,
+    category: meta.categoryLabel || fallbackCategory,
+    currentValue: toNumber(row.current_value),
+    linkedLoan: meta.linkedLoan || undefined,
+    name: row.name || "Untitled asset",
+    ownership: toNumber(row.ownership_percent, 100),
+    purchaseValue: toNumber(row.purchase_value),
+    updated: formatStoredMonth(row.last_updated || row.updated_at),
+  };
+}
+
+function mapLoanRow(row: DatabaseLoanRow): Loan {
+  const meta = parseMetadataNotes(row.notes);
+  const balance = toNumber(row.current_balance);
+  const rate = toNumber(row.interest_rate);
+  const remainingMonths = Math.round(toNumber(row.remaining_months, 0));
+
+  return {
+    id: row.id,
+    currentBalance: balance,
+    end: formatStoredMonth(row.expected_end_date),
+    interestLeft: Math.round(balance * (rate / 100) * Math.max(remainingMonths, 12) / 24),
+    linkedAsset: meta.linkedAsset || undefined,
+    monthlyPayment: toNumber(row.monthly_payment),
+    name: row.name || "Untitled loan",
+    originalAmount: toNumber(row.original_amount, balance),
+    rate,
+    remainingMonths,
+    start: formatStoredMonth(row.start_date),
+    type: meta.typeLabel || databaseLoanTypeLabels[databaseLoanType(row.type)],
+  };
+}
+
+function transactionInsertPayload(record: Transaction, userId: string) {
+  return {
+    amount: Math.abs(record.amount),
+    currency: "USD",
+    date: toIsoDate(record.date),
+    is_recurring: false,
+    merchant_or_source: record.source,
+    payment_method: record.method,
+    status: record.status === "Cleared" ? "cleared" : "pending",
+    tags: [`account:${record.account}`, `category:${record.category}`],
+    type: transactionTypeToDatabase[record.type],
+    user_id: userId,
+  };
+}
+
+function assetInsertPayload(record: Asset, userId: string) {
+  return {
+    category: databaseAssetCategory(record.category),
+    current_value: record.currentValue,
+    include_in_net_worth: true,
+    last_updated: formatIsoDateValue(new Date()),
+    name: record.name,
+    notes: metadataNotes({ categoryLabel: record.category, linkedLoan: record.linkedLoan }),
+    ownership_percent: record.ownership,
+    purchase_value: record.purchaseValue,
+    user_id: userId,
+    valuation_method: "manual",
+  };
+}
+
+function loanInsertPayload(record: Loan, userId: string) {
+  return {
+    current_balance: record.currentBalance,
+    expected_end_date: toIsoDate(record.end),
+    interest_rate: record.rate,
+    is_active: true,
+    monthly_payment: record.monthlyPayment,
+    name: record.name,
+    notes: metadataNotes({ linkedAsset: record.linkedAsset, typeLabel: record.type }),
+    original_amount: record.originalAmount,
+    payoff_strategy: "manual",
+    remaining_months: record.remainingMonths,
+    start_date: toIsoDate(record.start),
+    type: databaseLoanType(record.type),
+    user_id: userId,
+  };
+}
+
+function removeFirstRecord<T>(rows: T[], predicate: (row: T) => boolean) {
+  const index = rows.findIndex(predicate);
+  return index === -1 ? rows : rows.filter((_, rowIndex) => rowIndex !== index);
+}
+
+function sameTransaction(left: Transaction, right: Transaction) {
+  return (
+    left.date === right.date &&
+    left.type === right.type &&
+    left.account === right.account &&
+    left.category === right.category &&
+    left.source === right.source &&
+    left.amount === right.amount &&
+    left.method === right.method &&
+    left.status === right.status
+  );
+}
+
+function sameAsset(left: Asset, right: Asset) {
+  return left.name === right.name && left.category === right.category && left.currentValue === right.currentValue;
+}
+
+function sameLoan(left: Loan, right: Loan) {
+  return left.name === right.name && left.type === right.type && left.currentBalance === right.currentBalance;
+}
 
 function readInitialFinancialData(reset: boolean) {
   try {
@@ -438,11 +780,17 @@ type ResetControls = {
   dataReset: boolean;
   demoMode: boolean;
   openDemoWorkspace: () => void;
-  resetWorkspace: () => void;
+  resetWorkspace: () => Promise<void>;
   restoreDemoData: () => void;
 };
 
 type FinancialDataActions = {
+  deleteAsset: (record: Asset) => Promise<DataOperationResult>;
+  deleteLoan: (record: Loan) => Promise<DataOperationResult>;
+  deleteTransaction: (record: Transaction) => Promise<DataOperationResult>;
+  saveAsset: (record: Asset) => Promise<DataOperationResult>;
+  saveLoan: (record: Loan) => Promise<DataOperationResult>;
+  saveTransaction: (record: Transaction) => Promise<DataOperationResult>;
   updateFinancialData: (updater: FinancialDataUpdater) => void;
 };
 
@@ -457,13 +805,19 @@ type AuthContextValue = {
 
 const FinancialDataContext = createContext<FinancialData>(demoFinancialData);
 const FinancialDataActionsContext = createContext<FinancialDataActions>({
+  deleteAsset: async () => ({ ok: true }),
+  deleteLoan: async () => ({ ok: true }),
+  deleteTransaction: async () => ({ ok: true }),
+  saveAsset: async () => ({ ok: true }),
+  saveLoan: async () => ({ ok: true }),
+  saveTransaction: async () => ({ ok: true }),
   updateFinancialData: () => undefined,
 });
 const ResetControlsContext = createContext<ResetControls>({
   dataReset: false,
   demoMode: false,
   openDemoWorkspace: () => undefined,
-  resetWorkspace: () => undefined,
+  resetWorkspace: async () => undefined,
   restoreDemoData: () => undefined,
 });
 const AuthContext = createContext<AuthContextValue>({
@@ -584,7 +938,174 @@ export default function App() {
     };
   }, []);
 
-  const resetWorkspace = () => {
+  useEffect(() => {
+    if (!supabase || !session || demoMode) return;
+
+    let mounted = true;
+
+    const loadWorkspaceData = async () => {
+      const [transactionResult, assetResult, loanResult] = await Promise.all([
+        supabase.from("transactions").select("*").eq("user_id", session.user.id).order("date", { ascending: false }),
+        supabase.from("assets").select("*").eq("user_id", session.user.id).order("updated_at", { ascending: false }),
+        supabase.from("loans").select("*").eq("user_id", session.user.id).order("updated_at", { ascending: false }),
+      ]);
+
+      if (!mounted) return;
+
+      const error = transactionResult.error || assetResult.error || loanResult.error;
+      if (error) {
+        console.error("Unable to load Supabase workspace data:", error.message);
+        return;
+      }
+
+      const nextData = deriveFinancialData({
+        ...emptyFinancialData,
+        assets: (assetResult.data ?? []).map((row) => mapAssetRow(row as DatabaseAssetRow)),
+        loans: (loanResult.data ?? []).map((row) => mapLoanRow(row as DatabaseLoanRow)),
+        transactions: (transactionResult.data ?? []).map((row) => mapTransactionRow(row as DatabaseTransactionRow)),
+      });
+
+      clearPersistedFinancialData();
+      persistResetState(false);
+      setWorkspaceData(nextData);
+      setDataReset(false);
+    };
+
+    void loadWorkspaceData();
+
+    return () => {
+      mounted = false;
+    };
+  }, [session, demoMode]);
+
+  const updateFinancialData = (updater: FinancialDataUpdater) => {
+    setWorkspaceData((current) => {
+      const next = deriveFinancialData(updater(current));
+
+      if (!supabase || !session || demoMode) {
+        persistFinancialData(next);
+      } else {
+        clearPersistedFinancialData();
+      }
+
+      return next;
+    });
+  };
+
+  const saveTransaction = async (record: Transaction): Promise<DataOperationResult> => {
+    if (!supabase || !session || demoMode) {
+      const saved = { ...record, id: record.id ?? localRecordId("transaction") };
+      updateFinancialData((current) => ({ ...current, transactions: [saved, ...current.transactions] }));
+      return { ok: true };
+    }
+
+    const { data, error } = await supabase
+      .from("transactions")
+      .insert(transactionInsertPayload(record, session.user.id))
+      .select("*")
+      .single();
+
+    if (error) return { ok: false, message: error.message };
+
+    const saved = mapTransactionRow(data as DatabaseTransactionRow);
+    updateFinancialData((current) => ({ ...current, transactions: [saved, ...current.transactions] }));
+    return { ok: true };
+  };
+
+  const deleteTransaction = async (record: Transaction): Promise<DataOperationResult> => {
+    if (supabase && session && !demoMode && record.id) {
+      const { error } = await supabase.from("transactions").delete().eq("id", record.id).eq("user_id", session.user.id);
+      if (error) return { ok: false, message: error.message };
+    }
+
+    updateFinancialData((current) => ({
+      ...current,
+      transactions: removeFirstRecord(current.transactions, (row) => (record.id ? row.id === record.id : sameTransaction(row, record))),
+    }));
+    return { ok: true };
+  };
+
+  const saveAsset = async (record: Asset): Promise<DataOperationResult> => {
+    if (!supabase || !session || demoMode) {
+      const saved = { ...record, id: record.id ?? localRecordId("asset") };
+      updateFinancialData((current) => ({ ...current, assets: [saved, ...current.assets] }));
+      return { ok: true };
+    }
+
+    const { data, error } = await supabase
+      .from("assets")
+      .insert(assetInsertPayload(record, session.user.id))
+      .select("*")
+      .single();
+
+    if (error) return { ok: false, message: error.message };
+
+    const saved = mapAssetRow(data as DatabaseAssetRow);
+    updateFinancialData((current) => ({ ...current, assets: [saved, ...current.assets] }));
+    return { ok: true };
+  };
+
+  const deleteAsset = async (record: Asset): Promise<DataOperationResult> => {
+    if (supabase && session && !demoMode && record.id) {
+      const { error } = await supabase.from("assets").delete().eq("id", record.id).eq("user_id", session.user.id);
+      if (error) return { ok: false, message: error.message };
+    }
+
+    updateFinancialData((current) => ({
+      ...current,
+      assets: removeFirstRecord(current.assets, (row) => (record.id ? row.id === record.id : sameAsset(row, record))),
+    }));
+    return { ok: true };
+  };
+
+  const saveLoan = async (record: Loan): Promise<DataOperationResult> => {
+    if (!supabase || !session || demoMode) {
+      const saved = { ...record, id: record.id ?? localRecordId("loan") };
+      updateFinancialData((current) => ({ ...current, loans: [saved, ...current.loans] }));
+      return { ok: true };
+    }
+
+    const { data, error } = await supabase
+      .from("loans")
+      .insert(loanInsertPayload(record, session.user.id))
+      .select("*")
+      .single();
+
+    if (error) return { ok: false, message: error.message };
+
+    const saved = mapLoanRow(data as DatabaseLoanRow);
+    updateFinancialData((current) => ({ ...current, loans: [saved, ...current.loans] }));
+    return { ok: true };
+  };
+
+  const deleteLoan = async (record: Loan): Promise<DataOperationResult> => {
+    if (supabase && session && !demoMode && record.id) {
+      const { error } = await supabase.from("loans").delete().eq("id", record.id).eq("user_id", session.user.id);
+      if (error) return { ok: false, message: error.message };
+    }
+
+    updateFinancialData((current) => ({
+      ...current,
+      loans: removeFirstRecord(current.loans, (row) => (record.id ? row.id === record.id : sameLoan(row, record))),
+    }));
+    return { ok: true };
+  };
+
+  const resetWorkspace = async () => {
+    if (supabase && session && !demoMode) {
+      const [transactionResult, assetResult, loanResult] = await Promise.all([
+        supabase.from("transactions").delete().eq("user_id", session.user.id),
+        supabase.from("assets").delete().eq("user_id", session.user.id),
+        supabase.from("loans").delete().eq("user_id", session.user.id),
+      ]);
+      const error = transactionResult.error || assetResult.error || loanResult.error;
+
+      if (error) {
+        window.alert(`Could not reset Supabase workspace data: ${error.message}`);
+        return;
+      }
+    }
+
     persistDemoMode(false);
     persistResetState(true);
     clearPersistedFinancialData();
@@ -612,14 +1133,6 @@ export default function App() {
     setPage("dashboard");
   };
 
-  const updateFinancialData = (updater: FinancialDataUpdater) => {
-    setWorkspaceData((current) => {
-      const next = deriveFinancialData(updater(current));
-      persistFinancialData(next);
-      return next;
-    });
-  };
-
   const signOut = async () => {
     if (supabase) await supabase.auth.signOut();
     setSession(null);
@@ -636,6 +1149,15 @@ export default function App() {
   const isAppShell = isWorkspaceShellPage(visiblePage) && (isAuthenticated || demoMode);
   const financialData = workspaceData;
   const resetControls = { dataReset, demoMode, openDemoWorkspace, resetWorkspace, restoreDemoData };
+  const financialDataActions = {
+    deleteAsset,
+    deleteLoan,
+    deleteTransaction,
+    saveAsset,
+    saveLoan,
+    saveTransaction,
+    updateFinancialData,
+  };
   const authValue = {
     authLoading,
     isAdmin,
@@ -653,7 +1175,7 @@ export default function App() {
   return (
     <AuthContext.Provider value={authValue}>
       <FinancialDataContext.Provider value={financialData}>
-        <FinancialDataActionsContext.Provider value={{ updateFinancialData }}>
+        <FinancialDataActionsContext.Provider value={financialDataActions}>
           <ResetControlsContext.Provider value={resetControls}>
             {isAppShell ? (
               <div className="app-frame">
@@ -1513,7 +2035,7 @@ function SignupPage({ setPage }: { setPage: (page: string) => void }) {
     }
 
     setMessage("");
-    resetWorkspace();
+    await resetWorkspace();
   };
 
   const resendOtp = async () => {
@@ -2127,7 +2649,7 @@ function DashboardPage({ setPage }: { setPage: (page: string) => void }) {
 
 function TransactionsPage() {
   const { transactions } = useFinancialData();
-  const { updateFinancialData } = useFinancialDataActions();
+  const { deleteTransaction, saveTransaction } = useFinancialDataActions();
   const [transactionRows, setTransactionRows] = useState<Transaction[]>(transactions);
   const [activeTab, setActiveTab] = useState("All Transactions");
   const [showFilters, setShowFilters] = useState(false);
@@ -2184,7 +2706,7 @@ function TransactionsPage() {
     setNotice("");
   };
 
-  const addTransaction = (event: FormEvent<HTMLFormElement>) => {
+  const addTransaction = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     const parsedAmount = Number(newTransaction.amount);
 
@@ -2205,14 +2727,18 @@ function TransactionsPage() {
       status: newTransaction.status,
     };
 
-    setTransactionRows((current) => [record, ...current]);
-    updateFinancialData((current) => ({ ...current, transactions: [record, ...current.transactions] }));
+    const result = await saveTransaction(record);
+    if (!result.ok) {
+      setNotice(`Could not save transaction: ${result.message}`);
+      return;
+    }
+
     setNewTransaction((current) => ({ ...current, source: "", amount: "" }));
     setShowAddForm(false);
     setNotice("Transaction added.");
   };
 
-  const addSampleImport = () => {
+  const addSampleImport = async () => {
     const imported: Transaction[] = [
       {
         date: "Jul 6, 2026",
@@ -2236,10 +2762,20 @@ function TransactionsPage() {
       },
     ];
 
-    setTransactionRows((current) => [...imported, ...current]);
-    updateFinancialData((current) => ({ ...current, transactions: [...imported, ...current.transactions] }));
+    const results = await Promise.all(imported.map((record) => saveTransaction(record)));
+    const failed = results.find((result) => !result.ok);
+    if (failed && !failed.ok) {
+      setNotice(`Could not import transactions: ${failed.message}`);
+      return;
+    }
+
     setShowBulkUpload(false);
     setNotice("Imported 2 sample CSV transactions.");
+  };
+
+  const removeTransaction = async (transaction: Transaction) => {
+    const result = await deleteTransaction(transaction);
+    setNotice(result.ok ? "Transaction deleted." : `Could not delete transaction: ${result.message}`);
   };
 
   const exportCsv = () => {
@@ -2295,7 +2831,7 @@ function TransactionsPage() {
         </div>
       </div>
 
-      {notice && <p className={notice.includes("Enter") ? "form-message danger" : "form-message info"}>{notice}</p>}
+      {notice && <p className={/enter|could not/i.test(notice) ? "form-message danger" : "form-message info"}>{notice}</p>}
 
       {showAddForm && (
         <Panel title="Add Manual Transaction" action={<button className="icon-button" onClick={() => setShowAddForm(false)} aria-label="Close add transaction form"><X size={16} /></button>}>
@@ -2415,7 +2951,7 @@ function TransactionsPage() {
       <Panel title={`July Activity (${filteredTransactions.length})`}>
         {filteredTransactions.length > 0 ? (
           <DataTable
-            columns={["Date", "Type", "Account", "Category", "Merchant / Source", "Amount", "Payment Method", "Status"]}
+            columns={["Date", "Type", "Account", "Category", "Merchant / Source", "Amount", "Payment Method", "Status", "Actions"]}
             rows={filteredTransactions.map((transaction) => [
               transaction.date,
               <Badge tone={transaction.type === "Income" ? "success" : transaction.type === "Expense" ? "warning" : "info"}>{transaction.type}</Badge>,
@@ -2425,6 +2961,9 @@ function TransactionsPage() {
               <span className={transaction.amount >= 0 ? "money-positive" : "money-negative"}>{signedCurrency(transaction.amount)}</span>,
               transaction.method,
               <Badge tone={transaction.status === "Cleared" ? "success" : "warning"}>{transaction.status}</Badge>,
+              <button className="icon-button" type="button" aria-label={`Delete ${transaction.source}`} onClick={() => removeTransaction(transaction)}>
+                <Trash2 size={16} />
+              </button>,
             ])}
           />
         ) : (
@@ -2660,16 +3199,24 @@ function FinancialHealthPage() {
 
 function AssetsPage() {
   const { assets, loans } = useFinancialData();
+  const { deleteAsset } = useFinancialDataActions();
+  const [notice, setNotice] = useState("");
   const house = assets[0];
   const linkedLoan = house ? loans.find((loan) => loan.name === house.linkedLoan) : undefined;
   const equity = house ? house.currentValue - (linkedLoan?.currentBalance ?? 0) : 0;
 
+  const removeAsset = async (asset: Asset) => {
+    const result = await deleteAsset(asset);
+    setNotice(result.ok ? "Asset deleted." : `Could not delete asset: ${result.message}`);
+  };
+
   return (
     <div className="page-stack">
       <PageToolbar title="Assets" actions={["Add asset", "Update value", "Upload document"]} />
+      {notice && <p className={/could not/i.test(notice) ? "form-message danger" : "form-message info"}>{notice}</p>}
       <Panel title="Asset Portfolio">
         <DataTable
-          columns={["Asset name", "Category", "Purchase value", "Current value", "Appreciation", "Ownership", "Linked loan", "Last updated"]}
+          columns={["Asset name", "Category", "Purchase value", "Current value", "Appreciation", "Ownership", "Linked loan", "Last updated", "Actions"]}
           rows={assets.map((asset) => [
             asset.name,
             asset.category,
@@ -2681,6 +3228,9 @@ function AssetsPage() {
             `${asset.ownership}%`,
             asset.linkedLoan ?? "None",
             asset.updated,
+            <button className="icon-button" type="button" aria-label={`Delete ${asset.name}`} onClick={() => removeAsset(asset)}>
+              <Trash2 size={16} />
+            </button>,
           ])}
         />
       </Panel>
@@ -2708,22 +3258,29 @@ function AssetsPage() {
 
 function LoansPage() {
   const { assets, loanSchedule, loans } = useFinancialData();
+  const { deleteLoan } = useFinancialDataActions();
   const autoLoan = loans[1] ?? loans[0];
   const carAsset = autoLoan ? assets.find((asset) => asset.name === autoLoan.linkedAsset) : undefined;
   const carEquity = autoLoan ? (carAsset?.currentValue ?? 0) - autoLoan.currentBalance : 0;
   const [extraMonthly, setExtraMonthly] = useState("200");
   const [oneTimePayment, setOneTimePayment] = useState("1000");
+  const [notice, setNotice] = useState("");
   const extra = Number(extraMonthly) || 0;
   const oneTime = Number(oneTimePayment) || 0;
   const monthsReduced = Math.max(1, Math.round((extra * 0.07 + oneTime / 1000) * 4));
   const interestSaved = Math.round(extra * 18 + oneTime * 0.35);
+  const removeLoan = async (loan: Loan) => {
+    const result = await deleteLoan(loan);
+    setNotice(result.ok ? "Loan deleted." : `Could not delete loan: ${result.message}`);
+  };
 
   return (
     <div className="page-stack">
       <PageToolbar title="Loans / Liabilities" actions={["Add loan", "Run simulator", "Export schedule"]} />
+      {notice && <p className={/could not/i.test(notice) ? "form-message danger" : "form-message info"}>{notice}</p>}
       <Panel title="Loan Portfolio">
         <DataTable
-          columns={["Loan name", "Original amount", "Current balance", "Interest rate", "Monthly payment", "Remaining months", "Interest left", "Status"]}
+          columns={["Loan name", "Original amount", "Current balance", "Interest rate", "Monthly payment", "Remaining months", "Interest left", "Status", "Actions"]}
           rows={loans.map((loan) => [
             loan.name,
             currency(loan.originalAmount),
@@ -2733,6 +3290,9 @@ function LoansPage() {
             loan.remainingMonths,
             currency(loan.interestLeft),
             <Badge tone="success">Active</Badge>,
+            <button className="icon-button" type="button" aria-label={`Delete ${loan.name}`} onClick={() => removeLoan(loan)}>
+              <Trash2 size={16} />
+            </button>,
           ])}
         />
       </Panel>
@@ -3266,7 +3826,7 @@ function CalendarPage() {
 
 function CalendarDateEntryForm({ dateKey, onDone }: { dateKey: string; onDone: (message: string) => void }) {
   const { loans } = useFinancialData();
-  const { updateFinancialData } = useFinancialDataActions();
+  const { saveTransaction, updateFinancialData } = useFinancialDataActions();
   const [entryType, setEntryType] = useState("Reminder");
   const selectedDate = parseDateKey(dateKey);
   const dateLabel = formatCalendarDate(selectedDate.year, selectedDate.monthIndex, selectedDate.day);
@@ -3281,7 +3841,7 @@ function CalendarDateEntryForm({ dateKey, onDone }: { dateKey: string; onDone: (
           ? "Transfer"
           : "Bill";
 
-  const submit = (event: FormEvent<HTMLFormElement>) => {
+  const submit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     const data = new FormData(event.currentTarget);
     const title = formString(data, "title", entryType);
@@ -3307,29 +3867,31 @@ function CalendarDateEntryForm({ dateKey, onDone }: { dateKey: string; onDone: (
       detail,
       tone,
     };
+    const transaction: Transaction | null = createsTransaction
+      ? {
+          date: formatInputDate(dateKey),
+          type: transactionType,
+          account: formString(data, "account", transactionType === "Income" ? "Checking" : "Credit card"),
+          category,
+          source,
+          amount: transactionType === "Income" ? amount : -amount,
+          method: formString(data, "method", transactionType === "Income" ? "ACH" : "Bank"),
+          status: formString(data, "status", "Pending") as Transaction["status"],
+        }
+      : null;
+
+    if (transaction) {
+      const result = await saveTransaction(transaction);
+      if (!result.ok) {
+        onDone(`Could not add ${entryType.toLowerCase()} for ${dateLabel}: ${result.message}`);
+        return;
+      }
+    }
 
     updateFinancialData((current) => {
-      const nextTransactions =
-        createsTransaction
-          ? [
-              {
-                date: formatInputDate(dateKey),
-                type: transactionType,
-                account: formString(data, "account", transactionType === "Income" ? "Checking" : "Credit card"),
-                category,
-                source,
-                amount: transactionType === "Income" ? amount : -amount,
-                method: formString(data, "method", transactionType === "Income" ? "ACH" : "Bank"),
-                status: formString(data, "status", "Pending") as Transaction["status"],
-              },
-              ...current.transactions,
-            ]
-          : current.transactions;
-
       return {
         ...current,
         reminders: [reminder, ...current.reminders],
-        transactions: nextTransactions,
       };
     });
     onDone(`${entryType} added for ${dateLabel}.`);
@@ -3549,20 +4111,20 @@ function SettingsPage() {
   const { dataReset, resetWorkspace, restoreDemoData } = useResetControls();
   const [editing, setEditing] = useState("");
   const [notice, setNotice] = useState("");
-  const runReset = () => {
-    const confirmed = window.confirm("Delete all NetView workspace data from this browser and start from scratch?");
+  const runReset = async () => {
+    const confirmed = window.confirm("Delete all NetView workspace data from this account and browser, then start from scratch?");
 
     if (!confirmed) return;
 
     setEditing("");
     setNotice("");
-    resetWorkspace();
+    await resetWorkspace();
   };
 
   return (
     <div className="page-stack">
       <PageToolbar title="Profile & Settings" actions={["Save changes", "Export data", "Security review"]} />
-      {notice && <p className="form-message info">{notice}</p>}
+      {notice && <p className={/could not|enter/i.test(notice) ? "form-message danger" : "form-message info"}>{notice}</p>}
       {editing && (
         <Panel title={`Edit ${editing}`} action={<button className="icon-button" onClick={() => setEditing("")} aria-label={`Close ${editing}`}><X size={16} /></button>}>
           <div className="action-workspace">
@@ -3600,7 +4162,7 @@ function SettingsPage() {
         <div className="reset-panel">
           <div>
             <h3>Start From Scratch</h3>
-            <p>This removes workspace records from this browser and returns you to onboarding.</p>
+            <p>This removes workspace records from this account and browser, then returns you to onboarding.</p>
           </div>
           <div className="button-row">
             <button className="danger-button" onClick={runReset}>
@@ -3928,10 +4490,10 @@ function FeatureActionForm({
 }
 
 function TransactionActionForm({ action, onDone }: { action: string; onDone: (message: string) => void }) {
-  const { updateFinancialData } = useFinancialDataActions();
+  const { saveTransaction } = useFinancialDataActions();
   const fixedType = action === "Add income" ? "Income" : action === "Add expense" ? "Expense" : "";
 
-  const submit = (event: FormEvent<HTMLFormElement>) => {
+  const submit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     const data = new FormData(event.currentTarget);
     const type = (fixedType || formString(data, "type", "Expense")) as Transaction["type"];
@@ -3951,7 +4513,12 @@ function TransactionActionForm({ action, onDone }: { action: string; onDone: (me
       status: formString(data, "status", "Cleared") as Transaction["status"],
     };
 
-    updateFinancialData((current) => ({ ...current, transactions: [record, ...current.transactions] }));
+    const result = await saveTransaction(record);
+    if (!result.ok) {
+      onDone(`Could not save ${type.toLowerCase()}: ${result.message}`);
+      return;
+    }
+
     onDone(`${type} added.`);
   };
 
@@ -4012,9 +4579,9 @@ function TransactionActionForm({ action, onDone }: { action: string; onDone: (me
 }
 
 function AssetActionForm({ action, onDone }: { action: string; onDone: (message: string) => void }) {
-  const { updateFinancialData } = useFinancialDataActions();
+  const { saveAsset } = useFinancialDataActions();
 
-  const submit = (event: FormEvent<HTMLFormElement>) => {
+  const submit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     const data = new FormData(event.currentTarget);
     const name = formString(data, "name");
@@ -4032,7 +4599,12 @@ function AssetActionForm({ action, onDone }: { action: string; onDone: (message:
       updated: "July 2026",
     };
 
-    updateFinancialData((current) => ({ ...current, assets: [record, ...current.assets] }));
+    const result = await saveAsset(record);
+    if (!result.ok) {
+      onDone(`Could not save asset: ${result.message}`);
+      return;
+    }
+
     onDone(`${action === "Update value" ? "Asset value" : "Asset"} saved.`);
   };
 
@@ -4073,9 +4645,9 @@ function AssetActionForm({ action, onDone }: { action: string; onDone: (message:
 }
 
 function LoanActionForm({ action, onDone }: { action: string; onDone: (message: string) => void }) {
-  const { updateFinancialData } = useFinancialDataActions();
+  const { saveLoan } = useFinancialDataActions();
 
-  const submit = (event: FormEvent<HTMLFormElement>) => {
+  const submit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     const data = new FormData(event.currentTarget);
     const name = formString(data, "name");
@@ -4099,7 +4671,12 @@ function LoanActionForm({ action, onDone }: { action: string; onDone: (message: 
       linkedAsset: formString(data, "linkedAsset") || undefined,
     };
 
-    updateFinancialData((current) => ({ ...current, loans: [record, ...current.loans] }));
+    const result = await saveLoan(record);
+    if (!result.ok) {
+      onDone(`Could not save loan: ${result.message}`);
+      return;
+    }
+
     onDone(`${action === "Add debt" ? "Debt" : "Loan"} added.`);
   };
 

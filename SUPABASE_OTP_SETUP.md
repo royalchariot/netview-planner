@@ -14,7 +14,7 @@ Add them locally in `.env.local`:
 ```bash
 VITE_SUPABASE_URL=https://your-project-ref.supabase.co
 VITE_SUPABASE_ANON_KEY=your-supabase-anon-key
-VITE_AUTH_REDIRECT_URL=https://royalchariot.github.io/netview-planner/#signup
+VITE_AUTH_REDIRECT_URL=https://royalchariot.github.io/netview-planner/
 ```
 
 ## 2. Enable OTP-style signup emails

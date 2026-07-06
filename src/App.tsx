@@ -105,7 +105,7 @@ const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY as string | undef
 const supabase = supabaseUrl && supabaseAnonKey ? createClient(supabaseUrl, supabaseAnonKey) : null;
 const authRedirectUrl =
   (import.meta.env.VITE_AUTH_REDIRECT_URL as string | undefined) ||
-  "https://royalchariot.github.io/netview-planner/#signup";
+  "https://royalchariot.github.io/netview-planner/";
 const pageTitleOverrides: Record<string, string> = {
   income: "Income",
   expenses: "Expenses",

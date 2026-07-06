@@ -1,4 +1,5 @@
 import { createContext, useContext, useEffect, useMemo, useState, type CSSProperties, type FormEvent, type ReactNode } from "react";
+import { createClient } from "@supabase/supabase-js";
 import {
   AlertTriangle,
   Apple,
@@ -97,9 +98,11 @@ import {
 const publicPages = ["home", "features", "pricing", "about", "blog", "contact", "login", "signup", "forgot"];
 const authPages = ["login", "signup", "forgot", "onboarding"];
 const appPages = navItems.filter((item) => item.group === "App").map((item) => item.id);
-const DEMO_OTP = "482917";
 const RESET_STORAGE_KEY = "netview:data-reset";
 const DATA_STORAGE_KEY = "netview:financial-data";
+const supabaseUrl = import.meta.env.VITE_SUPABASE_URL as string | undefined;
+const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY as string | undefined;
+const supabase = supabaseUrl && supabaseAnonKey ? createClient(supabaseUrl, supabaseAnonKey) : null;
 const pageTitleOverrides: Record<string, string> = {
   income: "Income",
   expenses: "Expenses",
@@ -1020,6 +1023,7 @@ function SignupPage({ setPage }: { setPage: (page: string) => void }) {
   });
   const [otp, setOtp] = useState("");
   const [message, setMessage] = useState("");
+  const [submitting, setSubmitting] = useState(false);
   const firstName = form.name.trim().split(/\s+/)[0] || "there";
 
   const updateForm = (field: keyof typeof form, value: string | boolean) => {
@@ -1027,7 +1031,7 @@ function SignupPage({ setPage }: { setPage: (page: string) => void }) {
     setMessage("");
   };
 
-  const submitDetails = (event: FormEvent<HTMLFormElement>) => {
+  const submitDetails = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
 
     if (!form.name.trim() || !form.email.trim() || !form.password || !form.confirmPassword) {
@@ -1055,21 +1059,86 @@ function SignupPage({ setPage }: { setPage: (page: string) => void }) {
       return;
     }
 
+    if (!supabase) {
+      setMessage("Email OTP is not configured yet. Add Supabase environment variables and redeploy.");
+      return;
+    }
+
+    setSubmitting(true);
     setOtp("");
-    setMessage(`OTP sent to ${form.email}. For this demo, use ${DEMO_OTP}.`);
+    setMessage("");
+
+    const { error } = await supabase.auth.signUp({
+      email: form.email.trim(),
+      password: form.password,
+      options: {
+        data: {
+          full_name: form.name.trim(),
+          country: form.country,
+          currency: form.currency,
+          tracking_focus: form.trackingFocus,
+        },
+        emailRedirectTo: `${window.location.origin}${import.meta.env.BASE_URL}#signup`,
+      },
+    });
+
+    setSubmitting(false);
+
+    if (error) {
+      setMessage(error.message);
+      return;
+    }
+
+    setMessage(`OTP sent to ${form.email}. Check that inbox and enter the 6-digit code.`);
     setPhase("otp");
   };
 
-  const verifyOtp = (event: FormEvent<HTMLFormElement>) => {
+  const verifyOtp = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
 
-    if (otp.trim() !== DEMO_OTP) {
-      setMessage("That OTP is not correct. Use the demo code shown above.");
+    if (!supabase) {
+      setMessage("Email OTP is not configured yet. Add Supabase environment variables and redeploy.");
+      return;
+    }
+
+    if (otp.trim().length !== 6) {
+      setMessage("Enter the 6-digit OTP from your email.");
+      return;
+    }
+
+    setSubmitting(true);
+    const { error } = await supabase.auth.verifyOtp({
+      email: form.email.trim(),
+      token: otp.trim(),
+      type: "email",
+    });
+    setSubmitting(false);
+
+    if (error) {
+      setMessage(error.message || "That OTP is not correct.");
       return;
     }
 
     setMessage("");
     setPhase("welcome");
+  };
+
+  const resendOtp = async () => {
+    if (!supabase) {
+      setMessage("Email OTP is not configured yet. Add Supabase environment variables and redeploy.");
+      return;
+    }
+
+    setSubmitting(true);
+    const { error } = await supabase.auth.resend({
+      type: "signup",
+      email: form.email.trim(),
+      options: {
+        emailRedirectTo: `${window.location.origin}${import.meta.env.BASE_URL}#signup`,
+      },
+    });
+    setSubmitting(false);
+    setMessage(error ? error.message : `New OTP sent to ${form.email}.`);
   };
 
   if (phase === "otp") {
@@ -1078,7 +1147,7 @@ function SignupPage({ setPage }: { setPage: (page: string) => void }) {
         <form className="auth-form" onSubmit={verifyOtp}>
           <div className="auth-status success">
             <ShieldCheck size={20} />
-            <span>We sent a one-time password to {form.email}. Demo OTP: {DEMO_OTP}</span>
+            <span>We sent a one-time password to {form.email}.</span>
           </div>
           <label>
             <span>Enter OTP</span>
@@ -1090,17 +1159,17 @@ function SignupPage({ setPage }: { setPage: (page: string) => void }) {
               onChange={(event) => setOtp(event.target.value.replace(/\D/g, ""))}
             />
           </label>
-          {message && <p className={message.includes("not correct") ? "form-message danger" : "form-message info"}>{message}</p>}
-          <button className="primary-button full" type="submit">
-            Verify and create account
+          {message && <p className={message.includes("sent") ? "form-message info" : "form-message danger"}>{message}</p>}
+          <button className="primary-button full" type="submit" disabled={submitting}>
+            {submitting ? "Verifying..." : "Verify and create account"}
             <ArrowRight size={17} />
           </button>
           <div className="form-row compact">
             <button className="text-button" type="button" onClick={() => setPhase("details")}>
               Edit details
             </button>
-            <button className="text-button" type="button" onClick={() => setMessage(`New OTP sent. Demo OTP: ${DEMO_OTP}.`)}>
-              Resend OTP
+            <button className="text-button" type="button" onClick={resendOtp} disabled={submitting}>
+              {submitting ? "Sending..." : "Resend OTP"}
             </button>
           </div>
         </form>
@@ -1217,9 +1286,9 @@ function SignupPage({ setPage }: { setPage: (page: string) => void }) {
           />
           Agree to terms
         </label>
-        {message && <p className="form-message danger">{message}</p>}
-        <button className="primary-button full" type="submit">
-          Send OTP
+        {message && <p className={message.includes("sent") ? "form-message info" : "form-message danger"}>{message}</p>}
+        <button className="primary-button full" type="submit" disabled={submitting}>
+          {submitting ? "Sending OTP..." : "Send OTP"}
           <ArrowRight size={17} />
         </button>
         <button className="text-button centered" type="button" onClick={() => setPage("login")}>

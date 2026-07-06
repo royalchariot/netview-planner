@@ -2,5 +2,8 @@ node_modules/
 dist/
 .playwright-mcp/
 .DS_Store
+.env
+.env.local
+.env.*.local
 selffin-*.png
 netview-*.png

@@ -176,6 +176,88 @@ create table if not exists public.loan_payments (
   remaining_balance_after_payment numeric(14, 2) not null default 0
 );
 
+create table if not exists public.receivables (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null references auth.users(id) on delete cascade,
+  ower_type text not null check (ower_type in ('friend', 'family', 'tenant', 'business_client', 'employer', 'third_party', 'other')),
+  reason text not null check (reason in ('personal_loan_given', 'rent_receivable', 'business_invoice', 'shared_expense', 'deposit_refund', 'reimbursement', 'other')),
+  person_or_entity text not null,
+  amount_owed numeric(14, 2) not null default 0,
+  amount_received numeric(14, 2) not null default 0,
+  due_date date,
+  payment_frequency text not null default 'one_time',
+  notes text,
+  status text not null default 'pending' check (status in ('pending', 'partially_paid', 'paid', 'overdue')),
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create table if not exists public.income_rules (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null references auth.users(id) on delete cascade,
+  name text not null,
+  income_type text not null,
+  source text not null,
+  amount numeric(14, 2) not null default 0,
+  start_date date not null default current_date,
+  end_date date,
+  frequency text not null check (frequency in ('one_time', 'daily', 'weekly', 'every_2_weeks', 'twice_a_month', 'monthly', 'quarterly', 'yearly', 'custom')),
+  receive_account_id uuid references public.accounts(id) on delete set null,
+  receive_account_name text,
+  taxable boolean not null default true,
+  auto_create_forecast_entries boolean not null default true,
+  notes text,
+  is_active boolean not null default true,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create table if not exists public.survival_budget_plans (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null references auth.users(id) on delete cascade,
+  name text not null,
+  expense_group text not null,
+  expense_type text not null,
+  total_amount numeric(14, 2) not null default 0,
+  tenure_months integer not null check (tenure_months > 0),
+  monthly_allocation numeric(14, 2) generated always as (round(total_amount / tenure_months, 2)) stored,
+  notes text,
+  is_active boolean not null default true,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create table if not exists public.future_plans (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null references auth.users(id) on delete cascade,
+  name text not null,
+  category text not null,
+  plan_type text not null,
+  target_amount numeric(14, 2) not null default 0,
+  current_saved_amount numeric(14, 2) not null default 0,
+  target_date date,
+  priority text not null default 'medium' check (priority in ('high', 'medium', 'low')),
+  notes text,
+  is_active boolean not null default true,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create table if not exists public.category_nodes (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null references auth.users(id) on delete cascade,
+  module text not null,
+  group_name text not null,
+  subgroup_name text,
+  sub_subgroup_name text,
+  item_name text,
+  sort_order integer not null default 0,
+  is_system_default boolean not null default false,
+  is_active boolean not null default true,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
 create table if not exists public.budgets (
   id uuid primary key default gen_random_uuid(),
   user_id uuid not null references auth.users(id) on delete cascade,
@@ -337,6 +419,11 @@ create index if not exists categories_user_kind_idx on public.categories(user_id
 create index if not exists assets_user_id_idx on public.assets(user_id);
 create index if not exists loans_user_id_idx on public.loans(user_id);
 create index if not exists loan_payments_user_loan_idx on public.loan_payments(user_id, loan_id);
+create index if not exists receivables_user_due_idx on public.receivables(user_id, due_date);
+create index if not exists income_rules_user_start_idx on public.income_rules(user_id, start_date);
+create index if not exists survival_budget_plans_user_id_idx on public.survival_budget_plans(user_id);
+create index if not exists future_plans_user_target_idx on public.future_plans(user_id, target_date);
+create index if not exists category_nodes_user_module_idx on public.category_nodes(user_id, module);
 create index if not exists budgets_user_month_idx on public.budgets(user_id, month);
 create index if not exists budget_lines_user_budget_idx on public.budget_lines(user_id, budget_id);
 create index if not exists goals_user_id_idx on public.goals(user_id);
@@ -361,6 +448,11 @@ begin
     'assets',
     'loans',
     'loan_payments',
+    'receivables',
+    'income_rules',
+    'survival_budget_plans',
+    'future_plans',
+    'category_nodes',
     'budgets',
     'budget_lines',
     'goals',
@@ -409,6 +501,11 @@ begin
     'income_sources',
     'assets',
     'loans',
+    'receivables',
+    'income_rules',
+    'survival_budget_plans',
+    'future_plans',
+    'category_nodes',
     'budgets',
     'budget_lines',
     'goals'

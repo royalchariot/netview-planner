@@ -87,12 +87,20 @@ import {
   totalLiabilities,
   transactions,
   trustItems,
+  futurePlans,
+  incomeRules,
+  receivables,
+  survivalBudgets,
   type Asset,
   type BudgetLine,
+  type FuturePlan,
   type GoalLine,
+  type IncomeRule,
   type Loan,
   type NavItem,
+  type Receivable,
   type Reminder,
+  type SurvivalBudgetPlan,
   type Tone,
   type Transaction,
 } from "./data";
@@ -115,10 +123,13 @@ const adminEmails = ((import.meta.env.VITE_ADMIN_EMAILS as string | undefined) |
   .map((email) => email.trim().toLowerCase())
   .filter(Boolean);
 const pageTitleOverrides: Record<string, string> = {
-  income: "Income",
+  transactions: "All Transactions",
+  income: "Income / Pay Received",
   expenses: "Expenses",
   "cash-flow": "Cash Flow",
   debt: "Debt",
+  budget: "Survival Budget",
+  goals: "Future Plans",
   "savings-rate": "Savings Rate",
   "financial-health": "Financial Health",
 };
@@ -186,8 +197,10 @@ type FinancialData = {
   emergencyMonths: number;
   financialHealthScore: number;
   forecastScenarios: typeof forecastScenarios;
+  futurePlans: FuturePlan[];
   goals: typeof goals;
   healthFactors: typeof healthFactors;
+  incomeRules: IncomeRule[];
   investments: typeof investments;
   liabilityBreakdown: typeof liabilityBreakdown;
   liquidSavings: number;
@@ -199,8 +212,10 @@ type FinancialData = {
   monthlyIncome: number;
   netWorth: number;
   netWorthSeries: typeof netWorthSeries;
+  receivables: Receivable[];
   reminders: typeof reminders;
   savingsRate: number;
+  survivalBudgets: SurvivalBudgetPlan[];
   totalAssets: number;
   totalLiabilities: number;
   transactions: Transaction[];
@@ -217,8 +232,10 @@ const demoFinancialData: FinancialData = {
   emergencyMonths,
   financialHealthScore,
   forecastScenarios,
+  futurePlans,
   goals,
   healthFactors,
+  incomeRules,
   investments,
   liabilityBreakdown,
   liquidSavings,
@@ -230,8 +247,10 @@ const demoFinancialData: FinancialData = {
   monthlyIncome,
   netWorth,
   netWorthSeries,
+  receivables,
   reminders,
   savingsRate,
+  survivalBudgets,
   totalAssets,
   totalLiabilities,
   transactions,
@@ -248,8 +267,10 @@ const emptyFinancialData: FinancialData = {
   emergencyMonths: 0,
   financialHealthScore: 0,
   forecastScenarios: [],
+  futurePlans: [],
   goals: [],
   healthFactors: [],
+  incomeRules: [],
   investments: [],
   liabilityBreakdown: [],
   liquidSavings: 0,
@@ -261,8 +282,10 @@ const emptyFinancialData: FinancialData = {
   monthlyIncome: 0,
   netWorth: 0,
   netWorthSeries: [],
+  receivables: [],
   reminders: [],
   savingsRate: 0,
+  survivalBudgets: [],
   totalAssets: 0,
   totalLiabilities: 0,
   transactions: [],
@@ -615,6 +638,195 @@ function sameAsset(left: Asset, right: Asset) {
 
 function sameLoan(left: Loan, right: Loan) {
   return left.name === right.name && left.type === right.type && left.currentBalance === right.currentBalance;
+}
+
+type IncomeForecastEntry = {
+  rule: IncomeRule;
+  date: Date;
+  status: "Posted income" | "Expected income" | "Missed income";
+};
+
+type MonthlyPlannerSummary = {
+  actualExpenses: number;
+  cashAvailable: number;
+  expectedIncome: number;
+  freeMoneyAvailable: number;
+  futurePlanSavingsRequired: number;
+  incomeReceived: number;
+  loanRepaymentsDue: number;
+  moneyOwedToMe: number;
+  monthlyKeepAside: number;
+  netWorthWithReceivables: number;
+  openingCash: number;
+  postedIncome: number;
+  receivablesExpected: number;
+  safeToSpend: number;
+  shortageOrSurplus: number;
+  survivalAllocation: number;
+  totalAssets: number;
+  totalDebts: number;
+};
+
+function parsePlannerDate(value: string | undefined, fallback = new Date()) {
+  if (!value) return fallback;
+  const isoMatch = value.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (isoMatch) return new Date(Number(isoMatch[1]), Number(isoMatch[2]) - 1, Number(isoMatch[3]));
+
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? fallback : parsed;
+}
+
+function monthStart(date = new Date()) {
+  return new Date(date.getFullYear(), date.getMonth(), 1);
+}
+
+function monthEnd(date = new Date()) {
+  return new Date(date.getFullYear(), date.getMonth() + 1, 0, 23, 59, 59, 999);
+}
+
+function isSameMonth(date: Date, reference = new Date()) {
+  return date.getFullYear() === reference.getFullYear() && date.getMonth() === reference.getMonth();
+}
+
+function formatPlannerDate(date: Date) {
+  return new Intl.DateTimeFormat("en-US", { day: "numeric", month: "short", year: "numeric" }).format(date);
+}
+
+function addFrequencyDate(date: Date, frequency: string) {
+  const next = new Date(date);
+  const normalized = frequency.toLowerCase();
+
+  if (normalized === "daily") next.setDate(next.getDate() + 1);
+  else if (normalized === "weekly") next.setDate(next.getDate() + 7);
+  else if (normalized === "every 2 weeks") next.setDate(next.getDate() + 14);
+  else if (normalized === "twice a month") next.setDate(next.getDate() + 15);
+  else if (normalized === "quarterly") next.setMonth(next.getMonth() + 3);
+  else if (normalized === "yearly") next.setFullYear(next.getFullYear() + 1);
+  else next.setMonth(next.getMonth() + 1);
+
+  return next;
+}
+
+function buildIncomeForecastEntries(rules: IncomeRule[], transactions: Transaction[], reference = new Date()) {
+  const start = monthStart(reference);
+  const end = monthEnd(reference);
+  const postedMatches = new Set<string>();
+  const postedRows = transactions.filter((row) => row.type === "Income" && row.status === "Cleared" && isSameMonth(parsePlannerDate(row.date), reference));
+  const entries: IncomeForecastEntry[] = [];
+
+  rules.forEach((rule) => {
+    let occurrence = parsePlannerDate(rule.startDate, start);
+    const stopDate = rule.endDate ? parsePlannerDate(rule.endDate, end) : end;
+    let guard = 0;
+
+    while (occurrence < start && guard < 120) {
+      if (rule.frequency.toLowerCase() === "one time") break;
+      occurrence = addFrequencyDate(occurrence, rule.frequency);
+      guard += 1;
+    }
+
+    while (occurrence <= end && occurrence <= stopDate && guard < 180) {
+      if (occurrence >= start) {
+        const postedIndex = postedRows.findIndex((row, index) => {
+          if (postedMatches.has(`${rule.name}-${index}`)) return false;
+          return row.source.toLowerCase() === rule.source.toLowerCase() && Math.abs(row.amount - rule.amount) < 1;
+        });
+        const posted = postedIndex >= 0;
+
+        if (posted) postedMatches.add(`${rule.name}-${postedIndex}`);
+
+        entries.push({
+          date: new Date(occurrence),
+          rule,
+          status: posted ? "Posted income" : occurrence < reference ? "Missed income" : "Expected income",
+        });
+      }
+
+      if (rule.frequency.toLowerCase() === "one time") break;
+      occurrence = addFrequencyDate(occurrence, rule.frequency);
+      guard += 1;
+    }
+  });
+
+  return entries.sort((left, right) => left.date.getTime() - right.date.getTime());
+}
+
+function receivableRemaining(row: Receivable) {
+  return Math.max(row.amountOwed - row.amountReceived, 0);
+}
+
+function survivalMonthlyAllocation(row: SurvivalBudgetPlan) {
+  return row.tenureMonths > 0 ? row.totalAmount / row.tenureMonths : row.totalAmount;
+}
+
+function monthsUntil(targetDate: string, reference = new Date()) {
+  const target = parsePlannerDate(targetDate, reference);
+  const months = (target.getFullYear() - reference.getFullYear()) * 12 + target.getMonth() - reference.getMonth();
+  return Math.max(months, 1);
+}
+
+function futurePlanMonthlyRequired(plan: FuturePlan, reference = new Date()) {
+  const remaining = Math.max(plan.targetAmount - plan.currentSaved, 0);
+  return remaining / monthsUntil(plan.targetDate, reference);
+}
+
+function futurePlanStatus(plan: FuturePlan, reference = new Date()) {
+  if (plan.currentSaved >= plan.targetAmount) return { label: "Ahead", tone: "success" as Tone };
+  const target = parsePlannerDate(plan.targetDate, reference);
+  const totalMonths = Math.max(monthsUntil(plan.targetDate, parsePlannerDate("Jan 1, 2026")), 1);
+  const elapsedMonths = Math.max(totalMonths - monthsUntil(plan.targetDate, reference), 0);
+  const expectedSaved = target > reference ? (plan.targetAmount / totalMonths) * elapsedMonths : plan.targetAmount;
+  if (plan.currentSaved + futurePlanMonthlyRequired(plan, reference) >= expectedSaved) return { label: "On track", tone: "success" as Tone };
+  return { label: "Behind", tone: "warning" as Tone };
+}
+
+function calculateMonthlyPlannerSummary(data: FinancialData, reference = new Date()): MonthlyPlannerSummary {
+  const incomeForecast = buildIncomeForecastEntries(data.incomeRules, data.transactions, reference);
+  const openingCash = data.assets
+    .filter((asset) => /cash|bank|checking|saving|wallet|money/i.test(`${asset.name} ${asset.category}`))
+    .reduce((sum, asset) => sum + asset.currentValue * (asset.ownership / 100), 0);
+  const postedIncome = data.transactions
+    .filter((row) => row.type === "Income" && row.status === "Cleared" && isSameMonth(parsePlannerDate(row.date), reference))
+    .reduce((sum, row) => sum + row.amount, 0);
+  const expectedIncome = incomeForecast
+    .filter((entry) => entry.status === "Expected income")
+    .reduce((sum, entry) => sum + entry.rule.amount, 0);
+  const receivablesExpected = data.receivables
+    .filter((row) => row.status !== "Paid" && isSameMonth(parsePlannerDate(row.dueDate), reference))
+    .reduce((sum, row) => sum + receivableRemaining(row), 0);
+  const actualExpenses = data.transactions
+    .filter((row) => row.type === "Expense" && row.status === "Cleared" && isSameMonth(parsePlannerDate(row.date), reference))
+    .reduce((sum, row) => sum + Math.abs(row.amount), 0);
+  const loanRepaymentsDue = data.loans.reduce((sum, loan) => sum + loan.monthlyPayment, 0);
+  const survivalAllocation = data.survivalBudgets.reduce((sum, row) => sum + survivalMonthlyAllocation(row), 0);
+  const futurePlanSavingsRequired = data.futurePlans.reduce((sum, plan) => sum + futurePlanMonthlyRequired(plan, reference), 0);
+  const moneyOwedToMe = data.receivables.reduce((sum, row) => sum + receivableRemaining(row), 0);
+  const totalAssetsValue = data.assets.reduce((sum, asset) => sum + asset.currentValue * (asset.ownership / 100), 0);
+  const totalDebts = data.loans.reduce((sum, loan) => sum + loan.currentBalance, 0);
+  const cashAvailable = openingCash + postedIncome + expectedIncome + receivablesExpected;
+  const monthlyKeepAside = survivalAllocation + futurePlanSavingsRequired + loanRepaymentsDue;
+  const safeToSpend = cashAvailable - monthlyKeepAside - actualExpenses;
+
+  return {
+    actualExpenses,
+    cashAvailable,
+    expectedIncome,
+    freeMoneyAvailable: safeToSpend,
+    futurePlanSavingsRequired,
+    incomeReceived: postedIncome,
+    loanRepaymentsDue,
+    moneyOwedToMe,
+    monthlyKeepAside,
+    netWorthWithReceivables: totalAssetsValue + moneyOwedToMe - totalDebts,
+    openingCash,
+    postedIncome,
+    receivablesExpected,
+    safeToSpend,
+    shortageOrSurplus: safeToSpend,
+    survivalAllocation,
+    totalAssets: totalAssetsValue,
+    totalDebts,
+  };
 }
 
 function readInitialFinancialData(reset: boolean) {
@@ -970,14 +1182,24 @@ export default function App() {
         return;
       }
 
+      const localPlannerData = readInitialFinancialData(readInitialResetState());
       const nextData = deriveFinancialData({
         ...emptyFinancialData,
+        budgetLines: localPlannerData.budgetLines,
+        forecastScenarios: localPlannerData.forecastScenarios,
+        futurePlans: localPlannerData.futurePlans,
+        goals: localPlannerData.goals,
+        incomeRules: localPlannerData.incomeRules,
+        investments: localPlannerData.investments,
+        receivables: localPlannerData.receivables,
+        reminders: localPlannerData.reminders,
+        survivalBudgets: localPlannerData.survivalBudgets,
         assets: (assetResult.data ?? []).map((row) => mapAssetRow(row as DatabaseAssetRow)),
         loans: (loanResult.data ?? []).map((row) => mapLoanRow(row as DatabaseLoanRow)),
         transactions: (transactionResult.data ?? []).map((row) => mapTransactionRow(row as DatabaseTransactionRow)),
       });
 
-      clearPersistedFinancialData();
+      persistFinancialData(nextData);
       persistResetState(false);
       setWorkspaceData(nextData);
       setDataReset(false);
@@ -994,11 +1216,7 @@ export default function App() {
     setWorkspaceData((current) => {
       const next = deriveFinancialData(updater(current));
 
-      if (!supabase || !session || demoMode) {
-        persistFinancialData(next);
-      } else {
-        clearPersistedFinancialData();
-      }
+      persistFinancialData(next);
 
       return next;
     });
@@ -1349,10 +1567,14 @@ function renderPage(page: string, setPage: (page: string) => void) {
       return <DashboardPage setPage={setPage} />;
     case "income":
       return <IncomeDetailPage />;
+    case "receivables":
+      return <ReceivablesPage />;
     case "expenses":
       return <ExpensesDetailPage />;
+    case "monthly-cash-flow":
+      return <MonthlyCashFlowPage />;
     case "cash-flow":
-      return <CashFlowDetailPage />;
+      return <MonthlyCashFlowPage />;
     case "debt":
       return <DebtDetailPage />;
     case "savings-rate":
@@ -1368,9 +1590,13 @@ function renderPage(page: string, setPage: (page: string) => void) {
     case "net-worth":
       return <NetWorthPage />;
     case "budget":
-      return <BudgetPage />;
+      return <SurvivalBudgetPage />;
+    case "survival-budget":
+      return <SurvivalBudgetPage />;
     case "goals":
-      return <GoalsPage />;
+      return <FuturePlansPage />;
+    case "future-plans":
+      return <FuturePlansPage />;
     case "forecast":
       return <ForecastPage />;
     case "investments":
@@ -1480,12 +1706,12 @@ function Sidebar({
   const grouped = useMemo(() => {
     const byId = (ids: string[]) => ids.map((id) => navItems.find((item) => item.id === id)).filter(Boolean) as NavItem[];
     return [
-      { group: "Overview", items: byId(["dashboard", "calendar"]) },
-      { group: "Money Flow", items: byId(["transactions", "income", "expenses"]) },
-      { group: "Planning", items: byId(["budget", "goals", "forecast"]) },
-      { group: "Wealth", items: byId(["assets", "loans", "net-worth", "investments"]) },
-      { group: "Records", items: byId(["reports", "documents"]) },
-      { group: "Intelligence", items: byId(["ai-advisor"]) },
+      { group: "Overview", items: byId(["dashboard", "monthly-cash-flow"]) },
+      { group: "What I Own", items: byId(["assets", "receivables"]) },
+      { group: "What I Owe", items: byId(["loans"]) },
+      { group: "Money In", items: byId(["income"]) },
+      { group: "Keep Aside", items: byId(["survival-budget", "future-plans"]) },
+      { group: "Records", items: byId(["reports"]) },
       { group: "System", items: byId(["settings", ...(isAdmin ? ["admin"] : [])]) },
     ];
   }, [isAdmin]);
@@ -2541,9 +2767,9 @@ function quickActionTarget(label: string) {
     "Add Expense": "expenses",
     "Add Asset": "assets",
     "Add Loan": "loans",
-    "Add Goal": "goals",
+    "Add Goal": "future-plans",
     "Upload Document": "documents",
-    "Run Forecast": "forecast",
+    "Run Forecast": "monthly-cash-flow",
   };
 
   return targets[label] ?? "transactions";
@@ -2558,43 +2784,28 @@ function healthScoreLabel(score: number) {
 }
 
 function DashboardPage({ setPage }: { setPage: (page: string) => void }) {
-  const {
-    alerts,
-    assetBreakdown,
-    budgetLines,
-    emergencyMonths,
-    goals,
-    liabilityBreakdown,
-    loans,
-    monthlyCashFlow,
-    monthlyDebtPayments,
-    monthlyExpenses,
-    monthlyIncome,
-    netWorth,
-    netWorthSeries,
-    reminders,
-    savingsRate,
-    totalAssets,
-    totalLiabilities,
-    financialHealthScore,
-    transactions,
-  } = useFinancialData();
+  const data = useFinancialData();
   const { demoMode, openDemoWorkspace } = useResetControls();
+  const summary = calculateMonthlyPlannerSummary(data);
+  const incomeForecast = buildIncomeForecastEntries(data.incomeRules, data.transactions);
   const hasFinancialData =
-    transactions.length > 0 || totalAssets > 0 || totalLiabilities > 0 || budgetLines.length > 0 || goals.length > 0;
-  const overBudgetLines = budgetLines.filter((line) => line.spent > line.budget).slice(0, 3);
-  const activeGoals = goals.slice(0, 3);
-  const highestInterestLoan = [...loans].sort((left, right) => right.rate - left.rate)[0];
-  const netWorthChange = netWorthSeries.length >= 2 ? netWorthSeries.at(-1)!.value - netWorthSeries.at(-2)!.value : 0;
+    data.transactions.length > 0 ||
+    summary.totalAssets > 0 ||
+    summary.totalDebts > 0 ||
+    data.receivables.length > 0 ||
+    data.futurePlans.length > 0 ||
+    data.survivalBudgets.length > 0;
+  const upcomingPayments = data.loans.slice(0, 4);
+  const upcomingIncome = incomeForecast.filter((entry) => entry.status === "Expected income").slice(0, 4);
   const summaryCards = [
-    { label: "Net Worth", value: currency(netWorth), detail: `${signedCurrency(netWorthChange)} vs Jun · Assets minus active liabilities`, tone: netWorth >= 0 ? "success" as Tone : "danger" as Tone, page: "net-worth" },
-    { label: "Monthly Cash Flow", value: signedCurrency(monthlyCashFlow), detail: "Income minus cleared expenses", tone: monthlyCashFlow >= 0 ? "success" as Tone : "danger" as Tone, page: "cash-flow" },
-    { label: "Income", value: currency(monthlyIncome), detail: "Cleared income transactions this month", tone: "info" as Tone, page: "income" },
-    { label: "Expenses", value: currency(monthlyExpenses), detail: "Cleared expense transactions this month", tone: monthlyExpenses > 0 ? "warning" as Tone : "info" as Tone, page: "expenses" },
-    { label: "Total Debt", value: currency(totalLiabilities), detail: `${currency(monthlyDebtPayments)} due monthly`, tone: totalLiabilities > 0 ? "danger" as Tone : "info" as Tone, page: "debt" },
-    { label: "Savings Rate", value: percent(savingsRate), detail: "Net cash flow divided by income", tone: savingsRate >= 20 ? "success" as Tone : savingsRate >= 10 ? "info" as Tone : "warning" as Tone, page: "savings-rate" },
-    { label: "Emergency Fund", value: `${emergencyMonths} mo`, detail: "Liquid assets divided by essential expenses", tone: emergencyMonths >= 6 ? "success" as Tone : emergencyMonths >= 3 ? "warning" as Tone : "danger" as Tone, page: "assets" },
-    { label: "Financial Health", value: `${financialHealthScore}/100`, detail: `${healthScoreLabel(financialHealthScore)} · Tap for score breakdown`, tone: financialHealthScore >= 75 ? "success" as Tone : financialHealthScore >= 60 ? "warning" as Tone : "danger" as Tone, page: "financial-health" },
+    { label: "Total Cash in Hand", value: currency(summary.openingCash), detail: "Cash, bank, savings, wallet assets", tone: "success" as Tone, page: "assets" },
+    { label: "Total Assets", value: currency(summary.totalAssets), detail: "Owned assets only", tone: "info" as Tone, page: "assets" },
+    { label: "Total Money Owed to Me", value: currency(summary.moneyOwedToMe), detail: "Receivables remaining", tone: "info" as Tone, page: "receivables" },
+    { label: "Total Loans / Debts", value: currency(summary.totalDebts), detail: "Current balances owed", tone: summary.totalDebts > 0 ? "danger" as Tone : "success" as Tone, page: "loans" },
+    { label: "Net Worth", value: currency(summary.netWorthWithReceivables), detail: "Assets + receivables - debts", tone: summary.netWorthWithReceivables >= 0 ? "success" as Tone : "danger" as Tone, page: "monthly-cash-flow" },
+    { label: "This Month Income", value: currency(summary.postedIncome + summary.expectedIncome), detail: `${currency(summary.postedIncome)} posted · ${currency(summary.expectedIncome)} expected`, tone: "success" as Tone, page: "income" },
+    { label: "Required Keep-Aside", value: currency(summary.monthlyKeepAside), detail: "Survival + future plans + debt due", tone: "warning" as Tone, page: "monthly-cash-flow" },
+    { label: "Safe-to-Spend", value: currency(summary.safeToSpend), detail: summary.safeToSpend < 0 ? "Shortage warning" : "Free money after required reserves", tone: summary.safeToSpend < 0 ? "danger" as Tone : "success" as Tone, page: "monthly-cash-flow" },
   ];
 
   if (!hasFinancialData && !demoMode) {
@@ -2603,14 +2814,11 @@ function DashboardPage({ setPage }: { setPage: (page: string) => void }) {
         <section className="dashboard-empty">
           <div>
             <p className="eyebrow">Empty dashboard</p>
-            <h2>Build your first financial dashboard.</h2>
-            <p>
-              Add income, expenses, assets, and loans to calculate cash flow, net worth, debt pressure, and your
-              financial health score.
-            </p>
+            <h2>Build your monthly money plan.</h2>
+            <p>Add assets, receivables, loans, income, survival budget, and future plans to calculate what is safe to spend this month.</p>
           </div>
           <div className="quick-actions">
-            {["Add Income", "Add Expense", "Add Asset", "Add Loan"].map((label) => (
+            {["Add Income", "Add Asset", "Add Loan", "Add Goal"].map((label) => (
               <button className="action-tile" key={label} onClick={() => setPage(quickActionTarget(label))}>
                 <Plus size={20} />
                 <span>{label}</span>
@@ -2630,9 +2838,9 @@ function DashboardPage({ setPage }: { setPage: (page: string) => void }) {
     <div className="page-stack">
       <div className="page-intro">
         <div>
-          <p className="eyebrow">{demoMode ? "Demo Mode" : "Monthly overview"}</p>
+          <p className="eyebrow">{demoMode ? "Demo Mode" : "Monthly finance plan"}</p>
           <h2>Dashboard</h2>
-          <p>Your complete financial picture for July 2026.</p>
+          <p>For this month: what you have, what must be kept aside, and what is freely available.</p>
         </div>
         <div className="button-row">
           {demoMode && (
@@ -2642,10 +2850,24 @@ function DashboardPage({ setPage }: { setPage: (page: string) => void }) {
           )}
           <button className="primary-button" onClick={() => setPage("transactions")}>
             <Plus size={17} />
-            Add Entry
+            Add Transaction
           </button>
         </div>
       </div>
+
+      <Panel title="This Month Answer">
+        <div className="cash-answer-grid">
+          <MetricBlock label="Cash available this month" value={currency(summary.cashAvailable)} />
+          <MetricBlock label="Must keep aside" value={currency(summary.monthlyKeepAside)} />
+          <MetricBlock label="Actual expenses paid" value={currency(summary.actualExpenses)} />
+          <MetricBlock label="Safe-to-spend" value={currency(summary.safeToSpend)} />
+        </div>
+        <p className={summary.safeToSpend < 0 ? "insight danger" : "insight success"}>
+          {summary.safeToSpend < 0
+            ? `Warning: safe-to-spend is negative by ${currency(Math.abs(summary.safeToSpend))}. Reduce spending, delay a plan, or collect receivables before committing more cash.`
+            : `${currency(summary.safeToSpend)} is freely available after survival reserves, future plan savings, debt repayments, and paid expenses.`}
+        </p>
+      </Panel>
 
       <div className="summary-grid">
         {summaryCards.map((card) => (
@@ -2653,107 +2875,101 @@ function DashboardPage({ setPage }: { setPage: (page: string) => void }) {
         ))}
       </div>
 
-      <div className="dashboard-grid">
-        <Panel title="Cash Flow" action={<Segmented labels={["Monthly", "Quarterly", "Yearly"]} />}>
-          <CashFlowChart />
-        </Panel>
-        <Panel title="Net Worth Trend" action={<Segmented labels={["Past", "Current", "Projected"]} />}>
-          <LineChart series={netWorthSeries} />
-        </Panel>
-      </div>
-
       <div className="dashboard-grid three">
-        <Panel title="Assets vs Liabilities">
-          <Breakdown title="Assets" rows={assetBreakdown} total={totalAssets} />
-          <Breakdown title="Liabilities" rows={liabilityBreakdown} total={totalLiabilities} />
-          <p className="insight info">Net value: {currency(totalAssets - totalLiabilities)}</p>
+        <Panel title="Required Keep-Aside">
+          <DataTable
+            columns={["Need", "This month amount", "Where it comes from"]}
+            rows={[
+              ["Survival money", currency(summary.survivalAllocation), "Survival budget allocation"],
+              ["Future plans", currency(summary.futurePlanSavingsRequired), "Monthly goal savings required"],
+              ["Debt repayment", currency(summary.loanRepaymentsDue), "Loan and credit payments due"],
+            ]}
+          />
         </Panel>
         <Panel title="Upcoming Payments">
           <div className="list-stack">
-            {reminders.length > 0 ? (
-              reminders.slice(0, 5).map((reminder) => <ReminderRow key={reminder.title} reminder={reminder} />)
-            ) : (
-              <EmptyState title="No reminders yet." detail="Add a money date to track upcoming payments." />
-            )}
-          </div>
-        </Panel>
-        <Panel title="Alerts">
-          <div className="list-stack">
-            {alerts.length > 0 ? (
-              alerts.map((alert) => <AlertRow key={alert.title} {...alert} />)
-            ) : (
-              <EmptyState title="No alerts yet." detail="Alerts will appear after you add financial records." />
-            )}
-          </div>
-        </Panel>
-      </div>
-
-      <div className="dashboard-grid three">
-        <Panel title="Budget Pressure">
-          <div className="list-stack">
-            {overBudgetLines.length > 0 ? (
-              overBudgetLines.map((line) => (
+            {upcomingPayments.length > 0 ? (
+              upcomingPayments.map((loan) => (
                 <InfoLine
-                  key={line.category}
-                  icon={AlertTriangle}
-                  title={`${line.category} is ${currency(line.spent - line.budget)} over`}
-                  detail={`${currency(line.spent)} spent against ${currency(line.budget)} planned`}
+                  key={loan.name}
+                  icon={CreditCard}
+                  title={`${loan.name}: ${currency(loan.monthlyPayment)}`}
+                  detail={`${loan.type} · ${currency(loan.currentBalance)} balance`}
                 />
               ))
             ) : (
-              <EmptyState title="No budget pressure." detail="Over-budget categories will appear here." />
+              <EmptyState title="No payments due." detail="Loan and repayment schedules will appear here." />
             )}
           </div>
         </Panel>
-        <Panel title="Goal Progress">
+        <Panel title="Upcoming Income">
           <div className="list-stack">
-            {activeGoals.length > 0 ? (
-              activeGoals.map((goal) => (
+            {upcomingIncome.length > 0 ? (
+              upcomingIncome.map((entry) => (
                 <InfoLine
-                  key={goal.name}
-                  icon={Goal}
-                  title={`${goal.name}: ${progress(goal.current, goal.target)}% funded`}
-                  detail={`${currency(goal.current)} saved of ${currency(goal.target)} target`}
+                  key={`${entry.rule.name}-${entry.date.toISOString()}`}
+                  icon={Banknote}
+                  title={`${entry.rule.name}: ${currency(entry.rule.amount)}`}
+                  detail={`${formatPlannerDate(entry.date)} · ${entry.rule.frequency}`}
                 />
               ))
             ) : (
-              <EmptyState title="No goals yet." detail="Add a financial goal to track target date progress." />
+              <EmptyState title="No expected income." detail="Recurring income rules create future expected entries." />
             )}
           </div>
-        </Panel>
-        <Panel title="Debt Payoff Snapshot">
-          {highestInterestLoan ? (
-            <div className="list-stack">
-              <InfoLine
-                icon={CreditCard}
-                title={`${highestInterestLoan.name} has the highest APR`}
-                detail={`${highestInterestLoan.rate}% APR · ${currency(highestInterestLoan.currentBalance)} balance`}
-              />
-              <p className="insight warning">
-                Paying extra toward this balance can reduce interest pressure before lower-rate loans.
-              </p>
-            </div>
-          ) : (
-            <EmptyState title="No active debt." detail="Loans and payoff opportunities will appear here." />
-          )}
         </Panel>
       </div>
 
       <div className="dashboard-grid">
-        <Panel title="AI Monthly Insight">
+        <Panel title="Monthly Cash Flow Formula">
+          <DataTable
+            columns={["Formula line", "Amount"]}
+            rows={[
+              ["Opening cash", currency(summary.openingCash)],
+              ["Posted income this month", currency(summary.postedIncome)],
+              ["Expected income remaining", currency(summary.expectedIncome)],
+              ["Receivables expected this month", currency(summary.receivablesExpected)],
+              ["Actual expenses paid", `-${currency(summary.actualExpenses)}`],
+              ["Loan repayments due", `-${currency(summary.loanRepaymentsDue)}`],
+              ["Survival budget allocation", `-${currency(summary.survivalAllocation)}`],
+              ["Future plan savings required", `-${currency(summary.futurePlanSavingsRequired)}`],
+              ["Safe-to-spend result", currency(summary.safeToSpend)],
+            ]}
+          />
+        </Panel>
+        <Panel title="Module Structure">
+          <HierarchyList
+            rows={[
+              ["Assets", "Asset type", "Subtype", "Asset item"],
+              ["Money Owed to Me", "Ower type", "Reason", "Person / entity"],
+              ["Loans / Debts", "Loan type", "Subtype", "Lender"],
+              ["Income", "Income type", "Source", "Recurring entries"],
+              ["Future Plans", "Category", "Plan type", "Goal"],
+            ]}
+          />
+        </Panel>
+      </div>
+
+      <div className="dashboard-grid">
+        <Panel title="Monthly Insight">
           <p className="insight info">
-            {monthlyCashFlow >= 0
-              ? `Your cash flow is positive at ${signedCurrency(monthlyCashFlow)}, but the highest APR debt should stay on the review list.`
-              : `Your cash flow is negative at ${signedCurrency(monthlyCashFlow)}. Review flexible spending and upcoming payments first.`}
+            Net worth uses the requested formula: assets + money owed to you - debts = {currency(summary.netWorthWithReceivables)}.
           </p>
-          <p className="muted">Educational guidance based on entered data. Not professional financial advice.</p>
+          <p className="muted">Safe-to-spend is cash available minus required keep-aside and actual expenses.</p>
         </Panel>
         <Panel title="Quick Actions">
           <div className="quick-actions">
-            {quickActions.map((action) => {
+            {[
+              { label: "Add Asset", page: "assets", icon: Landmark },
+              { label: "Add Receivable", page: "receivables", icon: CircleDollarSign },
+              { label: "Add Loan", page: "loans", icon: CreditCard },
+              { label: "Add Income", page: "income", icon: Banknote },
+              { label: "Set Survival Budget", page: "survival-budget", icon: WalletCards },
+              { label: "Add Future Plan", page: "future-plans", icon: Goal },
+            ].map((action) => {
               const Icon = action.icon;
               return (
-                <button className="action-tile" key={action.label} onClick={() => setPage(quickActionTarget(action.label))}>
+                <button className="action-tile" key={action.label} onClick={() => setPage(action.page)}>
                   <Icon size={20} />
                   <span>{action.label}</span>
                 </button>
@@ -2762,7 +2978,6 @@ function DashboardPage({ setPage }: { setPage: (page: string) => void }) {
           </div>
         </Panel>
       </div>
-
     </div>
   );
 }
@@ -3143,27 +3358,150 @@ function TransactionsPage() {
 }
 
 function IncomeDetailPage() {
-  const { monthlyIncome, transactions } = useFinancialData();
+  const { incomeRules, transactions } = useFinancialData();
+  const { updateFinancialData } = useFinancialDataActions();
+  const [showForm, setShowForm] = useState(false);
+  const [notice, setNotice] = useState("");
   const incomeRows = transactions.filter((transaction) => transaction.type === "Income");
-  const incomeBreakdown = Array.from(
-    incomeRows.reduce((grouped, row) => {
-      grouped.set(row.category, (grouped.get(row.category) ?? 0) + row.amount);
-      return grouped;
-    }, new Map<string, number>()),
-  ).map(([label, value], index) => ({ label, value, color: ["emerald", "blue", "amber", "violet"][index % 4] }));
+  const forecast = buildIncomeForecastEntries(incomeRules, transactions);
+  const postedTotal = incomeRows.filter((row) => row.status === "Cleared").reduce((sum, row) => sum + row.amount, 0);
+  const expectedTotal = forecast.filter((entry) => entry.status === "Expected income").reduce((sum, entry) => sum + entry.rule.amount, 0);
+  const missedTotal = forecast.filter((entry) => entry.status === "Missed income").reduce((sum, entry) => sum + entry.rule.amount, 0);
+
+  const submitRule = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const data = new FormData(event.currentTarget);
+    const name = formString(data, "name");
+    const amount = formNumber(data, "amount");
+
+    if (!name || amount <= 0) return;
+
+    const record: IncomeRule = {
+      id: localRecordId("income-rule"),
+      account: formString(data, "account", "Checking"),
+      amount,
+      endDate: formString(data, "endDate") || undefined,
+      frequency: formString(data, "frequency", "Monthly"),
+      incomeType: formString(data, "incomeType", "Salary"),
+      name,
+      notes: formString(data, "notes"),
+      source: formString(data, "source", name),
+      startDate: formatInputDate(formString(data, "startDate", formatIsoDateValue(new Date()))),
+      taxable: formString(data, "taxable", "Yes") === "Yes",
+    };
+
+    updateFinancialData((current) => ({ ...current, incomeRules: [record, ...current.incomeRules] }));
+    setShowForm(false);
+    setNotice("Income schedule saved.");
+  };
 
   return (
     <div className="page-stack">
-      <PageToolbar title="Income Tracking" actions={["Add income", "Mark received", "Export income"]} />
-      <div className="summary-grid four">
-        <SummaryCard label="Monthly expected" value={currency(monthlyIncome)} detail="Salary and freelance forecast" tone="success" />
-        <SummaryCard label="Received so far" value={currency(incomeRows.reduce((sum, row) => sum + row.amount, 0))} detail="Cleared deposits" tone="info" />
-        <SummaryCard label="Stability score" value="82/100" detail="Two reliable income streams" tone="success" />
-        <SummaryCard label="Projection" value={currency(monthlyIncome * 12)} detail="Current annual run rate" tone="info" />
+      <div className="page-toolbar">
+        <div>
+          <p className="eyebrow">Income → Income Type → Source → Recurring Rule → Entries</p>
+          <h2>Income / Pay Received</h2>
+        </div>
+        <div className="button-row">
+          <button className="primary-button" onClick={() => setShowForm((value) => !value)}>
+            <Plus size={17} />
+            Add income schedule
+          </button>
+          <button
+            className="ghost-button"
+            onClick={() => {
+              window.location.hash = "transactions";
+              window.setTimeout(() => window.dispatchEvent(new CustomEvent("netview:open-add-transaction")), 50);
+            }}
+          >
+            <Check size={17} />
+            Mark received
+          </button>
+        </div>
       </div>
-      <Panel title="Income Sources" action={<Segmented labels={["Monthly", "Quarterly", "Yearly"]} />}>
+      {notice && <p className="form-message info">{notice}</p>}
+      {showForm && (
+        <Panel title="Add Income Rule" action={<button className="icon-button" onClick={() => setShowForm(false)} aria-label="Close income form"><X size={16} /></button>}>
+          <form className="feature-action-form" onSubmit={submitRule}>
+            <label>
+              <span>Income name</span>
+              <input name="name" placeholder="Salary, rent, dividend..." required />
+            </label>
+            <label>
+              <span>Income type</span>
+              <select name="incomeType" defaultValue="Salary">
+                {["Salary", "Rental income", "Business income", "Investment income", "Dividend income", "Interest income", "Freelance income", "Money received back from someone", "Gift", "Other"].map((type) => <option key={type}>{type}</option>)}
+              </select>
+            </label>
+            <label>
+              <span>Source</span>
+              <input name="source" placeholder="Employer, tenant, client" required />
+            </label>
+            <label>
+              <span>Amount</span>
+              <input name="amount" inputMode="decimal" placeholder="5000" required />
+            </label>
+            <label>
+              <span>Start date</span>
+              <input name="startDate" type="date" defaultValue={formatIsoDateValue(new Date())} />
+            </label>
+            <label>
+              <span>Frequency</span>
+              <select name="frequency" defaultValue="Monthly">
+                {["One time", "Daily", "Weekly", "Every 2 weeks", "Twice a month", "Monthly", "Quarterly", "Yearly", "Custom"].map((frequency) => <option key={frequency}>{frequency}</option>)}
+              </select>
+            </label>
+            <label>
+              <span>End date optional</span>
+              <input name="endDate" type="date" />
+            </label>
+            <label>
+              <span>Receive account</span>
+              <input name="account" defaultValue="Checking" />
+            </label>
+            <label>
+              <span>Taxable</span>
+              <select name="taxable" defaultValue="Yes">
+                <option>Yes</option>
+                <option>No</option>
+              </select>
+            </label>
+            <label>
+              <span>Notes</span>
+              <input name="notes" placeholder="Optional" />
+            </label>
+            <button className="primary-button" type="submit">
+              Save income rule
+              <ArrowRight size={17} />
+            </button>
+          </form>
+        </Panel>
+      )}
+      <div className="summary-grid four">
+        <SummaryCard label="Posted income" value={currency(postedTotal)} detail="Received this month" tone="success" />
+        <SummaryCard label="Expected income" value={currency(expectedTotal)} detail="Remaining forecast this month" tone="info" />
+        <SummaryCard label="Missed income" value={currency(missedTotal)} detail="Past scheduled income not posted" tone={missedTotal > 0 ? "danger" : "success"} />
+        <SummaryCard label="Income rules" value={`${incomeRules.length}`} detail="Recurring schedules" tone="info" />
+      </div>
+      <Panel title="Income Hierarchy">
+        <HierarchyList rows={incomeRules.map((rule) => ["Income", rule.incomeType, rule.source, `${rule.frequency} · ${currency(rule.amount)}`])} />
+      </Panel>
+      <Panel title="Income Forecast Entries">
         <DataTable
-          columns={["Date", "Source", "Category", "Account", "Amount", "Status"]}
+          columns={["Date", "Income name", "Type", "Source", "Amount", "Status"]}
+          rows={forecast.map((entry) => [
+            formatPlannerDate(entry.date),
+            entry.rule.name,
+            entry.rule.incomeType,
+            entry.rule.source,
+            <span className="money-positive">{currency(entry.rule.amount)}</span>,
+            <Badge tone={entry.status === "Posted income" ? "success" : entry.status === "Expected income" ? "info" : "danger"}>{entry.status}</Badge>,
+          ])}
+        />
+      </Panel>
+      <Panel title="Posted Income Transactions">
+        <DataTable
+          columns={["Date", "Source", "Type", "Account", "Amount", "Status"]}
           rows={incomeRows.map((row) => [
             row.date,
             row.source,
@@ -3172,13 +3510,6 @@ function IncomeDetailPage() {
             <span className="money-positive">{signedCurrency(row.amount)}</span>,
             <Badge tone={row.status === "Cleared" ? "success" : "warning"}>{row.status}</Badge>,
           ])}
-        />
-      </Panel>
-      <Panel title="Income Breakdown">
-        <Breakdown
-          title="Sources"
-          total={monthlyIncome}
-          rows={incomeBreakdown}
         />
       </Panel>
     </div>
@@ -3358,13 +3689,301 @@ function FinancialHealthPage() {
   );
 }
 
+function SurvivalBudgetPage() {
+  const { survivalBudgets } = useFinancialData();
+  const { updateFinancialData } = useFinancialDataActions();
+  const [showForm, setShowForm] = useState(false);
+  const [notice, setNotice] = useState("");
+  const totalSurvival = survivalBudgets.reduce((sum, row) => sum + row.totalAmount, 0);
+  const monthlyNeed = survivalBudgets.reduce((sum, row) => sum + survivalMonthlyAllocation(row), 0);
+  const remainingFutureReserve = survivalBudgets.reduce((sum, row) => sum + Math.max(row.totalAmount - survivalMonthlyAllocation(row), 0), 0);
+
+  const submitSurvival = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const data = new FormData(event.currentTarget);
+    const name = formString(data, "name");
+    const totalAmount = formNumber(data, "totalAmount");
+    const tenureMonths = formNumber(data, "tenureMonths");
+
+    if (!name || totalAmount <= 0 || tenureMonths <= 0) return;
+
+    const record: SurvivalBudgetPlan = {
+      id: localRecordId("survival"),
+      expenseGroup: formString(data, "expenseGroup", "Housing"),
+      expenseType: formString(data, "expenseType", "Rent"),
+      name,
+      notes: formString(data, "notes"),
+      tenureMonths,
+      totalAmount,
+    };
+
+    updateFinancialData((current) => ({ ...current, survivalBudgets: [record, ...current.survivalBudgets] }));
+    setShowForm(false);
+    setNotice("Survival budget saved.");
+  };
+
+  return (
+    <div className="page-stack">
+      <div className="page-toolbar">
+        <div>
+          <p className="eyebrow">Survival Budget → Expense Group → Expense Type → Monthly Allocation</p>
+          <h2>Survival Budget</h2>
+        </div>
+        <button className="primary-button" onClick={() => setShowForm((value) => !value)}>
+          <Plus size={17} />
+          Add survival budget
+        </button>
+      </div>
+      {notice && <p className="form-message info">{notice}</p>}
+      {showForm && (
+        <Panel title="Add Survival Reserve" action={<button className="icon-button" onClick={() => setShowForm(false)} aria-label="Close survival budget form"><X size={16} /></button>}>
+          <form className="feature-action-form" onSubmit={submitSurvival}>
+            <label>
+              <span>Plan name</span>
+              <input name="name" placeholder="Six month survival reserve" required />
+            </label>
+            <label>
+              <span>Expense group</span>
+              <select name="expenseGroup" defaultValue="Housing">
+                {["Housing", "Food", "Travel / Transport", "Health", "Communication", "Personal Basics", "Emergency Buffer"].map((group) => <option key={group}>{group}</option>)}
+              </select>
+            </label>
+            <label>
+              <span>Expense type</span>
+              <input name="expenseType" placeholder="Rent, groceries, medical emergency..." required />
+            </label>
+            <label>
+              <span>Total survival amount</span>
+              <input name="totalAmount" inputMode="decimal" placeholder="9000" required />
+            </label>
+            <label>
+              <span>Tenure in months</span>
+              <input name="tenureMonths" inputMode="numeric" placeholder="6" required />
+            </label>
+            <label>
+              <span>Notes</span>
+              <input name="notes" placeholder="Optional" />
+            </label>
+            <button className="primary-button" type="submit">
+              Save survival budget
+              <ArrowRight size={17} />
+            </button>
+          </form>
+        </Panel>
+      )}
+      <div className="summary-grid four">
+        <SummaryCard label="Total survival amount" value={currency(totalSurvival)} detail="Total reserve target" tone="info" />
+        <SummaryCard label="Monthly survival need" value={currency(monthlyNeed)} detail="Total budget divided by tenure" tone="warning" />
+        <SummaryCard label="This month reserve" value={currency(monthlyNeed)} detail="Included in keep-aside" tone="warning" />
+        <SummaryCard label="Remaining future reserve" value={currency(remainingFutureReserve)} detail="Reserve after this month" tone="info" />
+      </div>
+      <Panel title="Survival Budget Formula">
+        <p className="insight info">Monthly Survival Need = Total Survival Budget / Tenure in Months.</p>
+        <DataTable
+          columns={["Expense group", "Expense type", "Total amount", "Tenure", "Monthly allocation", "Future reserve"]}
+          rows={survivalBudgets.map((row) => [
+            row.expenseGroup,
+            row.expenseType,
+            currency(row.totalAmount),
+            `${row.tenureMonths} months`,
+            currency(survivalMonthlyAllocation(row)),
+            currency(Math.max(row.totalAmount - survivalMonthlyAllocation(row), 0)),
+          ])}
+        />
+      </Panel>
+      <Panel title="Survival Hierarchy">
+        <HierarchyList rows={survivalBudgets.map((row) => ["Survival Budget", row.expenseGroup, row.expenseType, `${currency(survivalMonthlyAllocation(row))} / month`])} />
+      </Panel>
+    </div>
+  );
+}
+
+function FuturePlansPage() {
+  const { futurePlans } = useFinancialData();
+  const { updateFinancialData } = useFinancialDataActions();
+  const [showForm, setShowForm] = useState(false);
+  const [notice, setNotice] = useState("");
+  const totalTarget = futurePlans.reduce((sum, plan) => sum + plan.targetAmount, 0);
+  const totalSaved = futurePlans.reduce((sum, plan) => sum + plan.currentSaved, 0);
+  const monthlyRequired = futurePlans.reduce((sum, plan) => sum + futurePlanMonthlyRequired(plan), 0);
+  const behindCount = futurePlans.filter((plan) => futurePlanStatus(plan).label === "Behind").length;
+
+  const submitFuturePlan = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const data = new FormData(event.currentTarget);
+    const name = formString(data, "name");
+    const targetAmount = formNumber(data, "targetAmount");
+
+    if (!name || targetAmount <= 0) return;
+
+    const record: FuturePlan = {
+      id: localRecordId("future-plan"),
+      category: formString(data, "category", "Emergency Fund"),
+      currentSaved: formNumber(data, "currentSaved"),
+      name,
+      notes: formString(data, "notes"),
+      planType: formString(data, "planType", "6-month fund"),
+      priority: formString(data, "priority", "High") as FuturePlan["priority"],
+      targetAmount,
+      targetDate: formatInputDate(formString(data, "targetDate", formatIsoDateValue(new Date()))),
+    };
+
+    updateFinancialData((current) => ({ ...current, futurePlans: [record, ...current.futurePlans] }));
+    setShowForm(false);
+    setNotice("Future plan saved.");
+  };
+
+  return (
+    <div className="page-stack">
+      <div className="page-toolbar">
+        <div>
+          <p className="eyebrow">Future Plans → Plan Category → Plan Type → Goal → Monthly Saving Requirement</p>
+          <h2>Future Plans</h2>
+        </div>
+        <button className="primary-button" onClick={() => setShowForm((value) => !value)}>
+          <Plus size={17} />
+          Add future plan
+        </button>
+      </div>
+      {notice && <p className="form-message info">{notice}</p>}
+      {showForm && (
+        <Panel title="Add Future Plan" action={<button className="icon-button" onClick={() => setShowForm(false)} aria-label="Close future plan form"><X size={16} /></button>}>
+          <form className="feature-action-form" onSubmit={submitFuturePlan}>
+            <label>
+              <span>Plan name</span>
+              <input name="name" placeholder="Emergency fund, car down payment..." required />
+            </label>
+            <label>
+              <span>Plan category</span>
+              <select name="category" defaultValue="Emergency Fund">
+                {["Education", "Vehicle", "House / Real Estate", "Business", "Travel", "Emergency Fund", "Personal Goals"].map((category) => <option key={category}>{category}</option>)}
+              </select>
+            </label>
+            <label>
+              <span>Plan type</span>
+              <input name="planType" placeholder="6-month fund, down payment, course..." required />
+            </label>
+            <label>
+              <span>Target amount</span>
+              <input name="targetAmount" inputMode="decimal" placeholder="12000" required />
+            </label>
+            <label>
+              <span>Current saved</span>
+              <input name="currentSaved" inputMode="decimal" defaultValue="0" />
+            </label>
+            <label>
+              <span>Target date</span>
+              <input name="targetDate" type="date" defaultValue={formatIsoDateValue(new Date())} />
+            </label>
+            <label>
+              <span>Priority</span>
+              <select name="priority" defaultValue="High">
+                <option>High</option>
+                <option>Medium</option>
+                <option>Low</option>
+              </select>
+            </label>
+            <label>
+              <span>Notes</span>
+              <input name="notes" placeholder="Optional" />
+            </label>
+            <button className="primary-button" type="submit">
+              Save future plan
+              <ArrowRight size={17} />
+            </button>
+          </form>
+        </Panel>
+      )}
+      <div className="summary-grid four">
+        <SummaryCard label="Total plan targets" value={currency(totalTarget)} detail="All future goal targets" tone="info" />
+        <SummaryCard label="Current saved" value={currency(totalSaved)} detail="Already saved toward plans" tone="success" />
+        <SummaryCard label="Monthly required saving" value={currency(monthlyRequired)} detail="Remaining amount divided by remaining months" tone="warning" />
+        <SummaryCard label="Behind plans" value={`${behindCount}`} detail="Needs attention" tone={behindCount > 0 ? "danger" : "success"} />
+      </div>
+      <Panel title="Future Plan Hierarchy">
+        <HierarchyList rows={futurePlans.map((plan) => [plan.category, plan.planType, plan.name, `${currency(futurePlanMonthlyRequired(plan))} / month`])} />
+      </Panel>
+      <Panel title="Future Plan Requirements">
+        <DataTable
+          columns={["Plan", "Category", "Type", "Target", "Saved", "Remaining", "Target date", "Monthly required", "Priority", "Status"]}
+          rows={futurePlans.map((plan) => {
+            const status = futurePlanStatus(plan);
+            return [
+              plan.name,
+              plan.category,
+              plan.planType,
+              currency(plan.targetAmount),
+              currency(plan.currentSaved),
+              currency(Math.max(plan.targetAmount - plan.currentSaved, 0)),
+              plan.targetDate,
+              currency(futurePlanMonthlyRequired(plan)),
+              plan.priority,
+              <Badge tone={status.tone}>{status.label}</Badge>,
+            ];
+          })}
+        />
+      </Panel>
+    </div>
+  );
+}
+
+function MonthlyCashFlowPage() {
+  const data = useFinancialData();
+  const summary = calculateMonthlyPlannerSummary(data);
+  const formulaRows = [
+    ["Opening cash", currency(summary.openingCash)],
+    ["Posted income this month", currency(summary.postedIncome)],
+    ["Expected income this month", currency(summary.expectedIncome)],
+    ["Receivables expected this month", currency(summary.receivablesExpected)],
+    ["Actual expenses", `-${currency(summary.actualExpenses)}`],
+    ["Loan repayments due", `-${currency(summary.loanRepaymentsDue)}`],
+    ["Survival allocation", `-${currency(summary.survivalAllocation)}`],
+    ["Future plan savings required", `-${currency(summary.futurePlanSavingsRequired)}`],
+    ["Safe-to-spend", currency(summary.safeToSpend)],
+  ];
+
+  return (
+    <div className="page-stack">
+      <PageToolbar title="Monthly Cash Flow" actions={["Add cash event", "Run cash forecast", "Export cash flow"]} />
+      <div className="summary-grid four">
+        <SummaryCard label="Total money in hand" value={currency(summary.cashAvailable)} detail="Opening cash + income + receivables" tone="success" />
+        <SummaryCard label="Money needed for survival" value={currency(summary.survivalAllocation)} detail="This month reserve" tone="warning" />
+        <SummaryCard label="Money needed for future plans" value={currency(summary.futurePlanSavingsRequired)} detail="Monthly goal saving" tone="warning" />
+        <SummaryCard label="Safe-to-spend amount" value={currency(summary.safeToSpend)} detail={summary.safeToSpend < 0 ? "Shortage" : "Surplus"} tone={summary.safeToSpend < 0 ? "danger" : "success"} />
+      </div>
+      <Panel title="Money Available This Month Formula">
+        <DataTable columns={["Line item", "Amount"]} rows={formulaRows} />
+      </Panel>
+      <Panel title="Cash Flow Decision">
+        <p className={summary.safeToSpend < 0 ? "insight danger" : "insight success"}>
+          {summary.safeToSpend < 0
+            ? `Shortage: you need ${currency(Math.abs(summary.safeToSpend))} more to cover required keep-aside and actual expenses.`
+            : `Surplus: ${currency(summary.safeToSpend)} is available after required reserves and expenses.`}
+        </p>
+      </Panel>
+    </div>
+  );
+}
+
 function AssetsPage() {
   const { assets, loans } = useFinancialData();
   const { deleteAsset } = useFinancialDataActions();
   const [notice, setNotice] = useState("");
-  const house = assets[0];
-  const linkedLoan = house ? loans.find((loan) => loan.name === house.linkedLoan) : undefined;
-  const equity = house ? house.currentValue - (linkedLoan?.currentBalance ?? 0) : 0;
+  const assetValue = assets.reduce((sum, asset) => sum + asset.currentValue * (asset.ownership / 100), 0);
+  const purchaseValue = assets.reduce((sum, asset) => sum + asset.purchaseValue * (asset.ownership / 100), 0);
+  const linkedAssetDebt = assets.reduce((sum, asset) => {
+    const linkedLoan = loans.find((loan) => loan.name === asset.linkedLoan);
+    return sum + (linkedLoan?.currentBalance ?? 0);
+  }, 0);
+  const classifyAsset = (asset: Asset) => {
+    const label = `${asset.name} ${asset.category}`.toLowerCase();
+    if (/cash|bank|checking|saving|wallet|emergency/.test(label)) return { type: "Cash & Bank", subtype: /wallet/.test(label) ? "Digital wallet" : /cash/.test(label) ? "Cash in hand" : /saving|emergency/.test(label) ? "Savings account" : "Checking account" };
+    if (/real|home|house|land|property|apartment|rental|commercial/.test(label)) return { type: "Land / Real Estate", subtype: /land/.test(label) ? "Land" : /apartment/.test(label) ? "Apartment" : /rental/.test(label) ? "Rental property" : /commercial/.test(label) ? "Commercial property" : "House" };
+    if (/stock|fund|etf|crypto|gold|retirement|brokerage|deposit/.test(label)) return { type: "Investments", subtype: /crypto/.test(label) ? "Crypto" : /gold/.test(label) ? "Gold" : /retirement/.test(label) ? "Retirement accounts" : /fund/.test(label) ? "Mutual funds" : /etf|stock|brokerage/.test(label) ? "Stocks / ETFs" : "Fixed deposits" };
+    if (/vehicle|car|bike|truck|tesla|auto/.test(label)) return { type: "Vehicles", subtype: /bike/.test(label) ? "Bike" : /truck/.test(label) ? "Truck" : "Car" };
+    if (/business|inventory|equipment|company|website|app/.test(label)) return { type: "Business Assets", subtype: /inventory/.test(label) ? "Inventory" : /share|company/.test(label) ? "Company shares" : /website|app/.test(label) ? "Website/app/business value" : "Business equipment" };
+    return { type: "Personal Valuable Assets", subtype: /jewel/.test(label) ? "Jewelry" : /electronic/.test(label) ? "Electronics" : /furniture/.test(label) ? "Furniture" : "Collectibles" };
+  };
 
   const removeAsset = async (asset: Asset) => {
     const result = await deleteAsset(asset);
@@ -3375,44 +3994,195 @@ function AssetsPage() {
     <div className="page-stack">
       <PageToolbar title="Assets" actions={["Add asset", "Update value", "Upload document"]} />
       {notice && <p className={/could not/i.test(notice) ? "form-message danger" : "form-message info"}>{notice}</p>}
-      <Panel title="Asset Portfolio">
+      <div className="summary-grid four">
+        <SummaryCard label="Current asset value" value={currency(assetValue)} detail="Owned value after ownership percentage" tone="success" />
+        <SummaryCard label="Purchase value" value={currency(purchaseValue)} detail="Original acquisition value" tone="info" />
+        <SummaryCard label="Appreciation" value={signedCurrency(assetValue - purchaseValue)} detail="Current minus purchase value" tone={assetValue >= purchaseValue ? "success" : "warning"} />
+        <SummaryCard label="Linked asset debt" value={currency(linkedAssetDebt)} detail="Shown only when attached to an asset" tone={linkedAssetDebt > 0 ? "warning" : "success"} />
+      </div>
+      <Panel title="Asset Hierarchy">
+        <HierarchyList rows={assets.map((asset) => {
+          const group = classifyAsset(asset);
+          return [group.type, group.subtype, asset.name, currency(asset.currentValue)];
+        })} />
+      </Panel>
+      <Panel title="Asset Items">
         <DataTable
-          columns={["Asset name", "Category", "Purchase value", "Current value", "Appreciation", "Ownership", "Linked loan", "Last updated", "Actions"]}
-          rows={assets.map((asset) => [
-            asset.name,
-            asset.category,
-            currency(asset.purchaseValue),
-            currency(asset.currentValue),
-            <span className={asset.currentValue - asset.purchaseValue >= 0 ? "money-positive" : "money-negative"}>
-              {signedCurrency(asset.currentValue - asset.purchaseValue)}
-            </span>,
-            `${asset.ownership}%`,
-            asset.linkedLoan ?? "None",
-            asset.updated,
-            <button className="icon-button" type="button" aria-label={`Delete ${asset.name}`} onClick={() => removeAsset(asset)}>
+          columns={["Asset name", "Asset type", "Subtype", "Purchase value", "Current value", "Appreciation / depreciation", "Ownership", "Linked loan", "Notes / updated", "Actions"]}
+          rows={assets.map((asset) => {
+            const group = classifyAsset(asset);
+            return [
+              asset.name,
+              group.type,
+              group.subtype,
+              currency(asset.purchaseValue),
+              currency(asset.currentValue),
+              <span className={asset.currentValue - asset.purchaseValue >= 0 ? "money-positive" : "money-negative"}>
+                {signedCurrency(asset.currentValue - asset.purchaseValue)}
+              </span>,
+              `${asset.ownership}%`,
+              asset.linkedLoan ?? "None",
+              asset.updated,
+              <button className="icon-button" type="button" aria-label={`Delete ${asset.name}`} onClick={() => removeAsset(asset)}>
+                <Trash2 size={16} />
+              </button>,
+            ];
+          })}
+        />
+      </Panel>
+      <Panel title="Asset Rules">
+        <InsightList
+          tone="info"
+          items={[
+            "Assets show only asset type, subtype, and asset item details.",
+            "Loans and repayments stay in Loans / Debts unless linked to an asset.",
+            "Linked loan values are metadata for equity context, not repayment records.",
+          ]}
+        />
+      </Panel>
+    </div>
+  );
+}
+
+function ReceivablesPage() {
+  const { receivables } = useFinancialData();
+  const { updateFinancialData } = useFinancialDataActions();
+  const [showForm, setShowForm] = useState(false);
+  const [notice, setNotice] = useState("");
+  const totalOwed = receivables.reduce((sum, row) => sum + row.amountOwed, 0);
+  const totalReceived = receivables.reduce((sum, row) => sum + row.amountReceived, 0);
+  const totalRemaining = receivables.reduce((sum, row) => sum + receivableRemaining(row), 0);
+  const overdue = receivables.filter((row) => row.status === "Overdue").reduce((sum, row) => sum + receivableRemaining(row), 0);
+
+  const submitReceivable = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const data = new FormData(event.currentTarget);
+    const person = formString(data, "person");
+    const amountOwed = formNumber(data, "amountOwed");
+
+    if (!person || amountOwed <= 0) return;
+
+    const record: Receivable = {
+      id: localRecordId("receivable"),
+      amountOwed,
+      amountReceived: formNumber(data, "amountReceived"),
+      dueDate: formatInputDate(formString(data, "dueDate", formatIsoDateValue(new Date()))),
+      frequency: formString(data, "frequency", "One time"),
+      notes: formString(data, "notes"),
+      owerType: formString(data, "owerType", "Other"),
+      person,
+      reason: formString(data, "reason", "Other"),
+      status: formString(data, "status", "Pending") as Receivable["status"],
+    };
+
+    updateFinancialData((current) => ({ ...current, receivables: [record, ...current.receivables] }));
+    setShowForm(false);
+    setNotice("Receivable saved.");
+  };
+
+  const removeReceivable = (record: Receivable) => {
+    updateFinancialData((current) => ({
+      ...current,
+      receivables: removeFirstRecord(current.receivables, (row) => (record.id ? row.id === record.id : row.person === record.person && row.amountOwed === record.amountOwed)),
+    }));
+    setNotice("Receivable deleted.");
+  };
+
+  return (
+    <div className="page-stack">
+      <div className="page-toolbar">
+        <div>
+          <p className="eyebrow">Money Owed to Me → Ower Type → Reason → Person / Entity → Payment Schedule</p>
+          <h2>Money Owed to Me</h2>
+        </div>
+        <button className="primary-button" onClick={() => setShowForm((value) => !value)}>
+          <Plus size={17} />
+          Add receivable
+        </button>
+      </div>
+      {notice && <p className="form-message info">{notice}</p>}
+      {showForm && (
+        <Panel title="Add Money Owed to Me" action={<button className="icon-button" onClick={() => setShowForm(false)} aria-label="Close receivable form"><X size={16} /></button>}>
+          <form className="feature-action-form" onSubmit={submitReceivable}>
+            <label>
+              <span>Ower type</span>
+              <select name="owerType" defaultValue="Friend">
+                {["Friend", "Family", "Tenant", "Business client", "Employer", "Third party", "Other"].map((type) => <option key={type}>{type}</option>)}
+              </select>
+            </label>
+            <label>
+              <span>Reason</span>
+              <select name="reason" defaultValue="Personal loan given">
+                {["Personal loan given", "Rent receivable", "Business invoice", "Shared expense", "Deposit refund", "Reimbursement", "Other"].map((reason) => <option key={reason}>{reason}</option>)}
+              </select>
+            </label>
+            <label>
+              <span>Person / entity</span>
+              <input name="person" placeholder="Name" required />
+            </label>
+            <label>
+              <span>Amount owed</span>
+              <input name="amountOwed" inputMode="decimal" placeholder="1000" required />
+            </label>
+            <label>
+              <span>Amount received</span>
+              <input name="amountReceived" inputMode="decimal" defaultValue="0" />
+            </label>
+            <label>
+              <span>Due date</span>
+              <input name="dueDate" type="date" defaultValue={formatIsoDateValue(new Date())} />
+            </label>
+            <label>
+              <span>Frequency</span>
+              <select name="frequency" defaultValue="One time">
+                {["One time", "Weekly", "Every 2 weeks", "Monthly", "Quarterly", "Yearly"].map((frequency) => <option key={frequency}>{frequency}</option>)}
+              </select>
+            </label>
+            <label>
+              <span>Status</span>
+              <select name="status" defaultValue="Pending">
+                {["Pending", "Partially Paid", "Paid", "Overdue"].map((status) => <option key={status}>{status}</option>)}
+              </select>
+            </label>
+            <label>
+              <span>Notes</span>
+              <input name="notes" placeholder="Optional" />
+            </label>
+            <button className="primary-button" type="submit">
+              Save receivable
+              <ArrowRight size={17} />
+            </button>
+          </form>
+        </Panel>
+      )}
+      <div className="summary-grid four">
+        <SummaryCard label="Total owed" value={currency(totalOwed)} detail="Original receivable amount" tone="info" />
+        <SummaryCard label="Received" value={currency(totalReceived)} detail="Cash collected so far" tone="success" />
+        <SummaryCard label="Remaining balance" value={currency(totalRemaining)} detail="Counts as receivable asset" tone="warning" />
+        <SummaryCard label="Overdue" value={currency(overdue)} detail="Past due receivables" tone={overdue > 0 ? "danger" : "success"} />
+      </div>
+      <Panel title="Receivable Hierarchy">
+        <HierarchyList rows={receivables.map((row) => [row.owerType, row.reason, row.person, `${row.frequency} · ${row.dueDate}`])} />
+      </Panel>
+      <Panel title="People and Entities Who Owe Me">
+        <DataTable
+          columns={["Person / entity", "Ower type", "Reason", "Amount owed", "Received", "Remaining", "Due date", "Frequency", "Status", "Actions"]}
+          rows={receivables.map((row) => [
+            row.person,
+            row.owerType,
+            row.reason,
+            currency(row.amountOwed),
+            currency(row.amountReceived),
+            currency(receivableRemaining(row)),
+            row.dueDate,
+            row.frequency,
+            <Badge tone={row.status === "Paid" ? "success" : row.status === "Overdue" ? "danger" : row.status === "Partially Paid" ? "warning" : "info"}>{row.status}</Badge>,
+            <button className="icon-button" type="button" aria-label={`Delete ${row.person}`} onClick={() => removeReceivable(row)}>
               <Trash2 size={16} />
             </button>,
           ])}
         />
       </Panel>
-      <div className="dashboard-grid">
-        <Panel title="Asset Detail: Primary Home">
-          {house ? (
-            <>
-              <div className="detail-grid">
-                <MetricBlock label="Current value" value={currency(house.currentValue)} />
-                <MetricBlock label="Purchase price" value={currency(house.purchaseValue)} />
-                <MetricBlock label="Mortgage balance" value={currency(linkedLoan?.currentBalance ?? 0)} />
-                <MetricBlock label="Equity" value={currency(equity)} />
-              </div>
-              <LineChart series={[{ label: "2024", value: 400000 }, { label: "2025", value: 418000 }, { label: "2026", value: 430000 }, { label: "2027", value: 442000 }]} />
-            </>
-          ) : (
-            <EmptyState title="No assets yet." detail="Add an asset to start building your net worth view." />
-          )}
-        </Panel>
-        <CategoryPanel title="Asset Categories" items={assetCategories} />
-      </div>
     </div>
   );
 }
@@ -3430,6 +4200,18 @@ function LoansPage() {
   const oneTime = Number(oneTimePayment) || 0;
   const monthsReduced = Math.max(1, Math.round((extra * 0.07 + oneTime / 1000) * 4));
   const interestSaved = Math.round(extra * 18 + oneTime * 0.35);
+  const totalDebt = loans.reduce((sum, loan) => sum + loan.currentBalance, 0);
+  const monthlyRequired = loans.reduce((sum, loan) => sum + loan.monthlyPayment, 0);
+  const linkedDebt = loans.filter((loan) => loan.linkedAsset).reduce((sum, loan) => sum + loan.currentBalance, 0);
+  const overduePayments = loans.filter((loan) => loan.rate > 20).reduce((sum, loan) => sum + loan.monthlyPayment, 0);
+  const classifyLoan = (loan: Loan) => {
+    const label = `${loan.name} ${loan.type}`.toLowerCase();
+    if (/card|credit|statement|balance transfer/.test(label)) return { type: "Credit Card Repayments", subtype: /emi/.test(label) ? "EMI on credit card" : "Credit card balance", lender: loan.name };
+    if (/mortgage|personal|car|auto|home|education|student|business|bank/.test(label)) return { type: "Bank Loans", subtype: loan.type, lender: loan.name };
+    if (/friend|family|private|employer/.test(label)) return { type: "Third-Party Loans", subtype: loan.type, lender: loan.name };
+    if (/emi|bnpl|store|financing|product/.test(label)) return { type: "Buy Now Pay Later / EMI", subtype: loan.type, lender: loan.name };
+    return { type: "Other Debt", subtype: loan.type, lender: loan.name };
+  };
   const removeLoan = async (loan: Loan) => {
     const result = await deleteLoan(loan);
     setNotice(result.ok ? "Loan deleted." : `Could not delete loan: ${result.message}`);
@@ -3439,22 +4221,39 @@ function LoansPage() {
     <div className="page-stack">
       <PageToolbar title="Loans / Liabilities" actions={["Add loan", "Update loan", "Run simulator", "Export schedule"]} />
       {notice && <p className={/could not/i.test(notice) ? "form-message danger" : "form-message info"}>{notice}</p>}
+      <div className="summary-grid four">
+        <SummaryCard label="Total debt" value={currency(totalDebt)} detail="Current balances owed" tone={totalDebt > 0 ? "danger" : "success"} />
+        <SummaryCard label="Monthly repayment required" value={currency(monthlyRequired)} detail="Minimum and EMI payments" tone="warning" />
+        <SummaryCard label="Debt linked to assets" value={currency(linkedDebt)} detail="Mortgage, auto, or secured debts" tone="info" />
+        <SummaryCard label="High-risk monthly due" value={currency(overduePayments)} detail="High APR / urgent repayment bucket" tone={overduePayments > 0 ? "danger" : "success"} />
+      </div>
+      <Panel title="Debt Hierarchy">
+        <HierarchyList rows={loans.map((loan) => {
+          const group = classifyLoan(loan);
+          return [group.type, group.subtype, group.lender, `${currency(loan.monthlyPayment)} monthly`];
+        })} />
+      </Panel>
       <Panel title="Loan Portfolio">
         <DataTable
-          columns={["Loan name", "Original amount", "Current balance", "Interest rate", "Monthly payment", "Remaining months", "Interest left", "Status", "Actions"]}
-          rows={loans.map((loan) => [
-            loan.name,
-            currency(loan.originalAmount),
-            currency(loan.currentBalance),
-            `${loan.rate}%`,
-            currency(loan.monthlyPayment),
-            loan.remainingMonths,
-            currency(loan.interestLeft),
-            <Badge tone="success">Active</Badge>,
-            <button className="icon-button" type="button" aria-label={`Delete ${loan.name}`} onClick={() => removeLoan(loan)}>
-              <Trash2 size={16} />
-            </button>,
-          ])}
+          columns={["Loan type", "Loan subtype", "Lender / loan", "Original amount", "Current balance", "Interest rate", "Monthly payment", "Due frequency", "Linked asset", "Status", "Actions"]}
+          rows={loans.map((loan) => {
+            const group = classifyLoan(loan);
+            return [
+              group.type,
+              group.subtype,
+              loan.name,
+              currency(loan.originalAmount),
+              currency(loan.currentBalance),
+              `${loan.rate}%`,
+              currency(loan.monthlyPayment),
+              "Monthly",
+              loan.linkedAsset ?? "Not linked",
+              <Badge tone={loan.rate > 20 ? "danger" : "success"}>{loan.rate > 20 ? "High APR" : "Active"}</Badge>,
+              <button className="icon-button" type="button" aria-label={`Delete ${loan.name}`} onClick={() => removeLoan(loan)}>
+                <Trash2 size={16} />
+              </button>,
+            ];
+          })}
         />
       </Panel>
       <div className="dashboard-grid">
@@ -4137,15 +4936,27 @@ function CalendarDateEntryForm({ dateKey, onDone }: { dateKey: string; onDone: (
 }
 
 function ReportsPage() {
+  const filters = ["Month", "Year", "Category", "Type", "Status", "Account", "Person/entity"];
+
   return (
     <div className="page-stack">
       <PageToolbar title="Reports & Analytics" actions={["Export PDF", "Export Excel", "Export CSV"]} />
+      <Panel title="Report Filters">
+        <div className="filter-grid">
+          {filters.map((filter) => (
+            <label key={filter}>
+              <span>{filter}</span>
+              <input placeholder={`Filter by ${filter.toLowerCase()}`} />
+            </label>
+          ))}
+        </div>
+      </Panel>
       <div className="report-grid">
         {reportTypes.map((report) => (
           <article className="report-card" key={report}>
             <FileSpreadsheet size={22} />
             <h3>{report}</h3>
-            <p>Professional report layout with filters, comparison periods, and download options.</p>
+            <p>Filterable by month, year, category, type, status, account, and person/entity.</p>
             <div className="button-row">
               <button
                 className="ghost-button"
@@ -4272,6 +5083,13 @@ function SettingsPage() {
   const { dataReset, resetWorkspace, restoreDemoData } = useResetControls();
   const [editing, setEditing] = useState("");
   const [notice, setNotice] = useState("");
+  const [customCategory, setCustomCategory] = useState("");
+  const [categoryRows, setCategoryRows] = useState<string[][]>([
+    ["Assets", "Cash & Bank", "Savings account", "Emergency Fund"],
+    ["Loans / Debts", "Bank Loans", "Car loan", "Chase Auto Loan"],
+    ["Future Plans", "Vehicle", "Down payment", "Tesla Model Y"],
+    ["Survival Budget", "Housing", "Rent / Mortgage", "Monthly Allocation"],
+  ]);
   const runReset = async () => {
     const confirmed = window.confirm("Delete all NetView workspace data from this account and browser, then start from scratch?");
 
@@ -4319,6 +5137,31 @@ function SettingsPage() {
           </Panel>
         ))}
       </div>
+      <Panel title="Category Management">
+        <div className="category-manager">
+          <HierarchyList rows={categoryRows} />
+          <form
+            className="category-add-form"
+            onSubmit={(event) => {
+              event.preventDefault();
+              if (!customCategory.trim()) return;
+              setCategoryRows((rows) => [["Custom", "Group", "Subgroup", customCategory.trim()], ...rows]);
+              setCustomCategory("");
+              setNotice("Custom category added.");
+            }}
+          >
+            <label>
+              <span>Add custom item/category</span>
+              <input value={customCategory} onChange={(event) => setCustomCategory(event.target.value)} placeholder="Example: Texas Land, Medical bill, Course fee" />
+            </label>
+            <button className="primary-button" type="submit">
+              Add category
+              <Plus size={17} />
+            </button>
+          </form>
+          <p className="muted">Default categories are provided, and custom groups can be added without mixing module data.</p>
+        </div>
+      </Panel>
       <Panel title="Reset Workspace">
         <div className="reset-panel">
           <div>
@@ -5503,6 +6346,26 @@ function DataTable({ columns, rows }: { columns: string[]; rows: ReactNode[][] }
           ))}
         </tbody>
       </table>
+    </div>
+  );
+}
+
+function HierarchyList({ rows }: { rows: string[][] }) {
+  if (rows.length === 0) {
+    return <EmptyState title="No hierarchy yet." detail="Add records to build this module tree." />;
+  }
+
+  return (
+    <div className="hierarchy-list">
+      {rows.map((row, index) => (
+        <div className="hierarchy-row" key={`${row.join("-")}-${index}`}>
+          {row.map((item, itemIndex) => (
+            <span key={`${item}-${itemIndex}`} className={`hierarchy-level level-${Math.min(itemIndex + 1, 4)}`}>
+              {item}
+            </span>
+          ))}
+        </div>
+      ))}
     </div>
   );
 }

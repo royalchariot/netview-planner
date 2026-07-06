@@ -90,6 +90,55 @@ export type GoalLine = {
   priority: "High" | "Medium" | "Low";
 };
 
+export type Receivable = {
+  id?: string;
+  owerType: string;
+  reason: string;
+  person: string;
+  amountOwed: number;
+  amountReceived: number;
+  dueDate: string;
+  frequency: string;
+  notes: string;
+  status: "Pending" | "Partially Paid" | "Paid" | "Overdue";
+};
+
+export type IncomeRule = {
+  id?: string;
+  name: string;
+  incomeType: string;
+  source: string;
+  amount: number;
+  startDate: string;
+  frequency: string;
+  endDate?: string;
+  account: string;
+  taxable: boolean;
+  notes: string;
+};
+
+export type SurvivalBudgetPlan = {
+  id?: string;
+  name: string;
+  expenseGroup: string;
+  expenseType: string;
+  totalAmount: number;
+  tenureMonths: number;
+  notes: string;
+};
+
+export type FuturePlan = {
+  id?: string;
+  name: string;
+  category: string;
+  planType: string;
+  targetAmount: number;
+  currentSaved: number;
+  targetDate: string;
+  priority: "High" | "Medium" | "Low";
+  notes: string;
+};
+
 export type Reminder = {
   day: string;
   title: string;
@@ -117,20 +166,14 @@ export const navItems: NavItem[] = [
   { id: "signup", label: "Signup", group: "Auth", icon: Upload },
   { id: "onboarding", label: "Onboarding", group: "Auth", icon: Flag },
   { id: "dashboard", label: "Dashboard", group: "App", icon: Gauge },
-  { id: "calendar", label: "Calendar", group: "App", icon: CalendarDays },
-  { id: "transactions", label: "Transactions", group: "App", icon: ReceiptText },
-  { id: "income", label: "Income", group: "App", icon: Banknote },
-  { id: "expenses", label: "Expenses", group: "App", icon: ReceiptText },
-  { id: "budget", label: "Budget", group: "App", icon: WalletCards },
-  { id: "goals", label: "Goals", group: "App", icon: Goal },
-  { id: "forecast", label: "Forecast", group: "App", icon: TrendingUp },
   { id: "assets", label: "Assets", group: "App", icon: Landmark },
-  { id: "loans", label: "Loans", group: "App", icon: CreditCard },
-  { id: "net-worth", label: "Net Worth", group: "App", icon: LineChart },
-  { id: "investments", label: "Investments", group: "App", icon: BarChart3 },
+  { id: "receivables", label: "Money Owed to Me", group: "App", icon: CircleDollarSign },
+  { id: "loans", label: "Loans / Debts / Repayments", group: "App", icon: CreditCard },
+  { id: "income", label: "Income / Pay Received", group: "App", icon: Banknote },
+  { id: "survival-budget", label: "Survival Budget", group: "App", icon: WalletCards },
+  { id: "future-plans", label: "Future Plans", group: "App", icon: Goal },
+  { id: "monthly-cash-flow", label: "Monthly Cash Flow", group: "App", icon: LineChart },
   { id: "reports", label: "Reports", group: "App", icon: FileText },
-  { id: "documents", label: "Documents", group: "App", icon: ShieldCheck },
-  { id: "ai-advisor", label: "AI Advisor", group: "App", icon: Bot },
   { id: "settings", label: "Settings", group: "App", icon: LockKeyhole },
   { id: "admin", label: "Admin", group: "Admin", icon: BriefcaseBusiness },
 ];
@@ -351,6 +394,138 @@ export const goals: GoalLine[] = [
   },
 ];
 
+export const receivables: Receivable[] = [
+  {
+    owerType: "Tenant",
+    reason: "Rent receivable",
+    person: "Austin duplex tenant",
+    amountOwed: 1800,
+    amountReceived: 900,
+    dueDate: "Jul 12, 2026",
+    frequency: "Monthly",
+    notes: "Second half of July rent is expected after bank transfer clears.",
+    status: "Partially Paid",
+  },
+  {
+    owerType: "Business client",
+    reason: "Business invoice",
+    person: "BrightPath Studio",
+    amountOwed: 2400,
+    amountReceived: 0,
+    dueDate: "Jul 20, 2026",
+    frequency: "One time",
+    notes: "Website maintenance invoice.",
+    status: "Pending",
+  },
+  {
+    owerType: "Friend",
+    reason: "Shared expense",
+    person: "Amit",
+    amountOwed: 320,
+    amountReceived: 0,
+    dueDate: "Jul 5, 2026",
+    frequency: "One time",
+    notes: "Trip booking split.",
+    status: "Overdue",
+  },
+];
+
+export const incomeRules: IncomeRule[] = [
+  {
+    name: "Northstar Analytics paycheck",
+    incomeType: "Salary",
+    source: "Northstar Analytics",
+    amount: 5000,
+    startDate: "Jul 1, 2026",
+    frequency: "Every 2 weeks",
+    account: "Checking",
+    taxable: true,
+    notes: "Forecast every two weeks without duplicate expected entries.",
+  },
+  {
+    name: "Studio retainer",
+    incomeType: "Freelance income",
+    source: "Studio retainer",
+    amount: 1850,
+    startDate: "Jul 5, 2026",
+    frequency: "Monthly",
+    account: "Checking",
+    taxable: true,
+    notes: "Expected monthly retainer.",
+  },
+  {
+    name: "Rental income",
+    incomeType: "Rental income",
+    source: "Austin duplex",
+    amount: 1800,
+    startDate: "Jul 1, 2026",
+    frequency: "Monthly",
+    account: "Savings",
+    taxable: true,
+    notes: "Linked to tenant receivable when unpaid.",
+  },
+];
+
+export const survivalBudgets: SurvivalBudgetPlan[] = [
+  {
+    name: "Six month survival reserve",
+    expenseGroup: "Housing",
+    expenseType: "Rent / Mortgage",
+    totalAmount: 9000,
+    tenureMonths: 6,
+    notes: "Monthly survival allocation is total divided by tenure.",
+  },
+  {
+    name: "Food and household basics",
+    expenseGroup: "Food",
+    expenseType: "Groceries",
+    totalAmount: 3600,
+    tenureMonths: 6,
+    notes: "Core food reserve.",
+  },
+  {
+    name: "Emergency buffer",
+    expenseGroup: "Emergency Buffer",
+    expenseType: "Unexpected expense",
+    totalAmount: 3000,
+    tenureMonths: 6,
+    notes: "Medical, car repair, or urgent family support.",
+  },
+];
+
+export const futurePlans: FuturePlan[] = [
+  {
+    name: "Tesla Model Y replacement fund",
+    category: "Vehicle",
+    planType: "Down payment",
+    targetAmount: 18000,
+    currentSaved: 4200,
+    targetDate: "Dec 2027",
+    priority: "Medium",
+    notes: "Keep separate from debt repayment.",
+  },
+  {
+    name: "Six month emergency fund",
+    category: "Emergency Fund",
+    planType: "6-month fund",
+    targetAmount: 26000,
+    currentSaved: 18000,
+    targetDate: "Jul 2027",
+    priority: "High",
+    notes: "Primary safe-to-spend protection goal.",
+  },
+  {
+    name: "Business app launch",
+    category: "Business",
+    planType: "Website/app cost",
+    targetAmount: 12000,
+    currentSaved: 2500,
+    targetDate: "Apr 2027",
+    priority: "High",
+    notes: "Development, legal setup, and launch marketing.",
+  },
+];
+
 export const reminders: Reminder[] = [
   {
     day: "Jul 07",
@@ -445,16 +620,16 @@ export const documents = [
 ];
 
 export const reportTypes = [
-  "Monthly cash flow report",
-  "Income report",
-  "Expense report",
-  "Asset report",
-  "Loan report",
-  "Net worth report",
-  "Budget vs actual report",
-  "Goal progress report",
-  "Tax category report",
-  "Year-end summary",
+  "Monthly cash flow",
+  "Assets by type",
+  "Debts by type",
+  "Money owed to me",
+  "Income forecast",
+  "Expense forecast",
+  "Survival budget progress",
+  "Future plan progress",
+  "Net worth trend",
+  "Safe-to-spend trend",
 ];
 
 export const featureBlocks: FeatureBlock[] = [
@@ -655,9 +830,9 @@ export const liabilityBreakdown = [
 
 export const mobileTabs = [
   { label: "Dashboard", icon: Home, page: "dashboard" },
-  { label: "Transactions", icon: ReceiptText, page: "transactions" },
-  { label: "Add", icon: CircleDollarSign, page: "transactions" },
-  { label: "Goals", icon: PiggyBank, page: "goals" },
+  { label: "Assets", icon: Landmark, page: "assets" },
+  { label: "Income", icon: Banknote, page: "income" },
+  { label: "Plans", icon: PiggyBank, page: "future-plans" },
   { label: "Settings", icon: ClipboardList, page: "settings" },
 ];
 
